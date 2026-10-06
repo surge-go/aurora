@@ -1,0 +1,21 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+
+# Test coverage
+coverage.out
+
+# IDE settings
+.idea/
+.vscode/
+
+# Local environment and OS files
+.env
+.env.*
+.DS_Store
