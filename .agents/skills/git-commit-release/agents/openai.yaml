@@ -1,0 +1,5 @@
+interface:
+  display_name: "git 提交与发布"
+  short_description: "用中文完善提交、版本 tag 与发布流程"
+  brand_color: "#2563EB"
+  default_prompt: "使用 $git-commit-release 分析当前 Git 变更，生成完善的中文提交信息，并在明确授权后处理 commit、tag 或发布。"

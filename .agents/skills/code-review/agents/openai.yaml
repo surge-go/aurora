@@ -1,0 +1,5 @@
+interface:
+  display_name: "code-review"
+  short_description: "审查 Go 变更中的缺陷、竞态与设计风险"
+  brand_color: "#0F766E"
+  default_prompt: "使用 $go-code-review 审查当前 Go 代码变更，优先报告可执行的缺陷发现。"

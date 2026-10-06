@@ -1,0 +1,5 @@
+interface:
+  display_name: "qi 开发规范"
+  short_description: "遵循设计文档实现 qi 项目代码与目录结构"
+  brand_color: "#0F766E"
+  default_prompt: "使用 $qi-development-guidelines 按项目设计文档实现当前需求。"
