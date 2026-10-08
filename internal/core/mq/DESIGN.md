@@ -31,9 +31,12 @@ internal/core/mq/
   errors.go   # 稳定的公共错误类别（仅在确有需要时增加）
   redis/      # Redis Streams adapter；复用注入的 internal/core/redis client
   rabbitmq/   # RabbitMQ adapter 设计；实现前先完成本目录设计评审
+  kafka/      # Kafka adapter 设计；实现前先完成本目录设计评审
 ```
 
 公共 API 落在 `internal/core/mq` 根包；具体实现放在独立子包中，Redis Streams adapter 依赖公共契约和注入的 go-redis client，公共包不反向依赖实现。应用配置和 client 装配由应用配置层及 bootstrap 负责，公共包不负责构造具体实现。
+
+Kafka adapter 的设计见 `internal/core/mq/kafka/DESIGN.md`。该实现通过逻辑 destination 映射 Kafka topic，并在 adapter 内部管理 consumer group 与 offset；这些 broker 专属概念不进入公共契约。
 
 ## 5. 公共 API 草案
 
@@ -117,7 +120,7 @@ type Consumer interface {
 - 业务代码可以仅依赖 `Publisher` 或 `Consumer` 编写调用和 fake 测试。
 - 消息字段、发布结果不确定性、handler 返回值含义、消费取消和关闭语义均有文档约定。
 - 公共包不暴露具体 broker 配置，不包含网络连接或隐式后台任务。
-- RabbitMQ adapter 的设计见 `internal/core/mq/rabbitmq/DESIGN.md`；Kafka adapter 仍需另行提交设计，描述其如何满足本契约、哪些语义有差异以及如何验证。Redis adapter 的连接、TLS 和连接池配置沿用 `internal/core/redis`，Streams 语义见 `internal/core/mq/redis/README.md`。
+- RabbitMQ adapter 的设计见 `internal/core/mq/rabbitmq/DESIGN.md`；Kafka adapter 的设计见 `internal/core/mq/kafka/DESIGN.md`。两个 adapter 都需在实现时说明与公共契约的语义差异和验证方式。Redis adapter 的连接、TLS 和连接池配置沿用 `internal/core/redis`，Streams 语义见 `internal/core/mq/redis/README.md`。
 
 ## 11. 后续待定
 
