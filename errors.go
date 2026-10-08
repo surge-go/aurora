@@ -8,6 +8,14 @@ import (
 
 const defaultStatus = http.StatusInternalServerError
 
+var (
+	ErrInternal     = NewWithStatus(1000, http.StatusInternalServerError, "internal server error")
+	ErrBadRequest   = NewWithStatus(1001, http.StatusBadRequest, "bad request")
+	ErrUnauthorized = NewWithStatus(1002, http.StatusUnauthorized, "unauthorized")
+	ErrForbidden    = NewWithStatus(1003, http.StatusForbidden, "forbidden")
+	ErrNotFound     = NewWithStatus(1004, http.StatusNotFound, "not found")
+)
+
 type Error struct {
 	Code    int    `json:"code"`    // 业务错误码
 	Message string `json:"message"` // 用户可见消息
