@@ -562,7 +562,7 @@ aurora:
 # Optional tracing configuration. Uncomment the whole block to enable it.
 # tracing:
 #   service_name: aurora
-#   service_version: "0.0.1"
+#   service_version: "0.0.2"
 #   environment: development
 #   endpoint: "localhost:4317"
 #   protocol: grpc
@@ -581,7 +581,7 @@ aurora:
 # Optional metrics configuration. Uncomment the whole block to enable it.
 # metrics:
 #   service_name: aurora
-#   service_version: "0.0.1"
+#   service_version: "0.0.2"
 #   environment: development
 #   endpoint: "localhost:4317"
 #   protocol: grpc
@@ -605,7 +605,7 @@ logger:
   initial_fields:
     service: aurora
     environment: development
-    version: "0.0.1"
+    version: "0.0.2"
   encoder:
     message_key: msg
     level_key: level
