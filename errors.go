@@ -9,13 +9,39 @@ import (
 const defaultStatus = http.StatusInternalServerError
 
 var (
-	ErrInternal     = NewWithStatus(1000, http.StatusInternalServerError, "internal server error")
-	ErrBadRequest   = NewWithStatus(1001, http.StatusBadRequest, "bad request")
-	ErrUnauthorized = NewWithStatus(1002, http.StatusUnauthorized, "unauthorized")
-	ErrForbidden    = NewWithStatus(1003, http.StatusForbidden, "forbidden")
-	ErrNotFound     = NewWithStatus(1004, http.StatusNotFound, "not found")
+	// ErrInternal 表示服务器内部错误。
+	ErrInternal = NewWithStatus(1000, http.StatusInternalServerError, "服务发生异常")
+	// ErrBadRequest 表示请求参数或请求格式无效。
+	ErrBadRequest = NewWithStatus(1001, http.StatusBadRequest, "请求无效")
+	// ErrUnauthorized 表示请求缺少有效的身份认证信息。
+	ErrUnauthorized = NewWithStatus(1003, http.StatusUnauthorized, "请求未认证")
+	// ErrForbidden 表示当前身份无权访问资源。
+	ErrForbidden = NewWithStatus(1004, http.StatusForbidden, "无权访问")
+	// ErrNotFound 表示请求的资源不存在。
+	ErrNotFound = NewWithStatus(1005, http.StatusNotFound, "资源不存在")
+	// ErrMethodNotAllowed 表示请求方法不被目标资源支持。
+	ErrMethodNotAllowed = NewWithStatus(1006, http.StatusMethodNotAllowed, "请求方法不允许")
+	// ErrRequestTimeout 表示服务器等待请求超时。
+	ErrRequestTimeout = NewWithStatus(1007, http.StatusRequestTimeout, "请求超时")
+	// ErrConflict 表示请求与当前资源状态冲突。
+	ErrConflict = NewWithStatus(1008, http.StatusConflict, "请求冲突")
+	// ErrPayloadTooLarge 表示请求体超过服务器允许的大小。
+	ErrPayloadTooLarge = NewWithStatus(1009, http.StatusRequestEntityTooLarge, "请求体过大")
+	// ErrUnprocessableEntity 表示请求格式正确但语义校验失败。
+	ErrUnprocessableEntity = NewWithStatus(1010, http.StatusUnprocessableEntity, "请求无法处理")
+	// ErrTooManyRequests 表示请求频率超过限制。
+	ErrTooManyRequests = NewWithStatus(1011, http.StatusTooManyRequests, "请求过于频繁")
+	// ErrBadGateway 表示上游服务返回了无效响应。
+	ErrBadGateway = NewWithStatus(1012, http.StatusBadGateway, "网关错误")
+	// ErrServiceUnavailable 表示服务暂时不可用。
+	ErrServiceUnavailable = NewWithStatus(1013, http.StatusServiceUnavailable, "服务暂不可用")
+	// ErrGatewayTimeout 表示网关等待上游服务超时。
+	ErrGatewayTimeout = NewWithStatus(1014, http.StatusGatewayTimeout, "网关超时")
 )
 
+// Error 表示可安全返回给 HTTP 客户端的业务错误。
+// Message 只用于对外响应，err 仅用于日志和 errors.Is/errors.As 链路；
+// 这样底层数据库、网络或校验细节不会意外泄露到响应体。
 type Error struct {
 	Code    int    `json:"code"`    // 业务错误码
 	Message string `json:"message"` // 用户可见消息
@@ -23,8 +49,8 @@ type Error struct {
 	status  int    // HTTP 状态码
 }
 
-// New 创建错误
-func New(code int, message string) *Error {
+// NewError 创建使用默认 500 状态码的框架错误。
+func NewError(code int, message string) *Error {
 	return &Error{
 		Code:    code,
 		Message: message,
@@ -32,7 +58,7 @@ func New(code int, message string) *Error {
 	}
 }
 
-// NewWithStatus 创建带 HTTP 状态码的错误
+// NewWithStatus 创建带 HTTP 状态码的错误。
 func NewWithStatus(code int, status int, message string) *Error {
 	return &Error{
 		Code:    code,
@@ -41,7 +67,8 @@ func NewWithStatus(code int, status int, message string) *Error {
 	}
 }
 
-// clone 复制一份，避免链式调用污染预定义错误
+// clone 复制一份，避免链式调用污染预定义错误。预定义错误是共享变量，
+// 因此 WithXxx 始终返回新实例而不是修改接收者。
 func (e *Error) clone() *Error {
 	if e == nil {
 		return &Error{status: defaultStatus}
@@ -129,7 +156,7 @@ func (e *Error) Unwrap() error {
 // Wrap 包装已有错误为框架 Error。
 func Wrap(err error, code int, message string) *Error {
 	if err == nil {
-		return New(code, message)
+		return NewError(code, message)
 	}
 	return &Error{
 		Code:    code,

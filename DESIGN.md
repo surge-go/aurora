@@ -17,11 +17,11 @@ Redis 和 MQ 仍作为独立基础设施包存在，由应用组合根创建并�
 ### 目标
 
 - 保留 Gin 的路由和中间件能力，同时提供稳定的 Aurora 业务开发 API。
-- 让业务 Handler 使用标准库 `context.Context`，可以直接传递给数据库、Redis、MQ 和业务服务。
+- 让业务 Handler 使用 Aurora `*Context`，并通过 `c.Context()` 将标准库 `context.Context` 传递给数据库、Redis、MQ 和业务服务。
 - 提供显式、可测试、可组合的 HTTP Server 生命周期。
 - 提供安全的统一响应和业务错误映射，避免内部错误泄露到 HTTP 响应。
 - 复用现有 Aurora logger、tracing 和 metrics 的资源所有权约定。
-- 支持原生 Gin escape hatch，避免框架 API 覆盖 Gin 的全部能力。
+- 通过 Aurora 自有路由、上下文和中间件 API 提供稳定的业务开发接口。
 
 ### 非目标
 
@@ -40,7 +40,7 @@ aurora.go       # Engine、New、生命周期和根级选项
 config.go       # Config、MiddlewareConfig 和默认值
 context.go      # HTTP Context 封装
 handler.go      # HandlerFunc、Middleware 和泛型绑定
-router.go       # RouterGroup、路由注册和原生 Gin 适配
+router.go       # RouterGroup、路由注册和内部路由适配
 response.go     # Response 和响应写入
 errors.go       # Error、错误构造和预定义错误
 middleware.go   # 框架默认中间件装配
@@ -103,6 +103,7 @@ type Config struct {
 	WriteTimeout      time.Duration    `json:"write_timeout" yaml:"write_timeout" mapstructure:"write_timeout"`
 	IdleTimeout       time.Duration    `json:"idle_timeout" yaml:"idle_timeout" mapstructure:"idle_timeout"`
 	MaxHeaderBytes    int              `json:"max_header_bytes" yaml:"max_header_bytes" mapstructure:"max_header_bytes"`
+	MaxBodyBytes      int64            `json:"max_body_bytes" yaml:"max_body_bytes" mapstructure:"max_body_bytes"`
 	TrustedProxies    []string         `json:"trusted_proxies" yaml:"trusted_proxies" mapstructure:"trusted_proxies"`
 	Middleware        MiddlewareConfig `json:"middleware" yaml:"middleware" mapstructure:"middleware"`
 }
@@ -112,6 +113,7 @@ type MiddlewareConfig struct {
 	Recovery  bool `json:"recovery" yaml:"recovery" mapstructure:"recovery"`
 	AccessLog bool `json:"access_log" yaml:"access_log" mapstructure:"access_log"`
 	Tracing   bool `json:"tracing" yaml:"tracing" mapstructure:"tracing"`
+	Metrics   bool `json:"metrics" yaml:"metrics" mapstructure:"metrics"`
 }
 ```
 
@@ -125,10 +127,12 @@ ReadHeaderTimeout 5s
 WriteTimeout      30s
 IdleTimeout       60s
 MaxHeaderBytes    1 MiB
+MaxBodyBytes      10 MiB
 RequestID         true
 Recovery          true
 AccessLog         true
 Tracing           false
+Metrics           false
 ```
 
 `Addr` 使用标准监听地址语义，例如 `:8080`、`127.0.0.1:8080` 或
@@ -167,16 +171,12 @@ func (e *Engine) Shutdown(context.Context) error
 func (e *Engine) Run(context.Context) error
 
 func (e *Engine) ServeHTTP(http.ResponseWriter, *http.Request)
-func (e *Engine) Gin() *gin.Engine
 func (e *Engine) Addr() string
 func (e *Engine) Listening() bool
 ```
 
 `New` 只创建 Engine，不监听端口。路由和全局应用中间件必须在 `Start`、`Serve` 或 `Run`
 之前注册；服务开始监听后不支持修改路由树。
-
-`Gin()` 是 escape hatch，返回底层 `*gin.Engine`。通过该入口注册的原生 Gin handler 必须遵守
-同样的上下文传递和错误响应约定；框架不尝试拦截任意自定义响应。
 
 ## 7. Handler、Context 和路由分组
 
@@ -185,10 +185,9 @@ type HandlerFunc func(*Context)
 type Middleware = HandlerFunc
 
 type Context struct {
-	// 内部持有 *gin.Context。
+	// 内部持有请求上下文实现。
 }
 
-func (c *Context) Gin() *gin.Context
 func (c *Context) Request() *http.Request
 func (c *Context) Context() context.Context
 func (c *Context) Param(string) string
@@ -202,7 +201,7 @@ func (c *Context) Abort()
 ```
 
 `Context()` 返回 `c.Request().Context()`。业务代码、数据库、Redis、MQ 和下游 HTTP 客户端
-只接收这个标准 context；不得把 `*Context` 或 `*gin.Context` 传入业务层并长期保存。
+只接收这个标准 context；不得把请求上下文封装对象传入业务层并长期保存。
 
 ```go
 type RouterGroup struct {
@@ -229,21 +228,23 @@ func (g *RouterGroup) Any(path string, handlers ...HandlerFunc)
 
 ```go
 func Bind[Req any, Resp any](
-	fn func(context.Context, *Req) (*Resp, error),
+	fn func(c *Context, req *Req) (*Resp, error),
 ) HandlerFunc
 
 func BindR[Resp any](
-	fn func(context.Context) (*Resp, error),
+	fn func(c *Context) (*Resp, error),
 ) HandlerFunc
 
 func BindE[Req any](
-	fn func(context.Context, *Req) error,
+	fn func(c *Context, req *Req) error,
 ) HandlerFunc
 
 func BindRE(
-	fn func(context.Context) error,
+	fn func(c *Context) error,
 ) HandlerFunc
 ```
+
+**重要：** 业务函数接收 `*Context` 而不是 `context.Context`，这样业务函数可以直接访问请求上下文的所有方法（如 `c.Param()`、`c.Query()` 等）。如需传递给数据库、Redis、MQ 等基础设施，通过 `c.Context()` 获取标准 `context.Context`。
 
 绑定规则：
 
@@ -252,7 +253,7 @@ func BindRE(
 - `uri` tag 触发路径参数绑定；
 - `form` tag 触发 query/form 绑定；
 - JSON、XML、form 等 body 格式由 Gin binding 根据 Content-Type 选择；
-- 绑定或校验失败返回 `ErrBadRequest`，底层校验错误只进入日志，不直接返回；
+- 绑定或校验失败自动调用 `Context.Fail` 返回 `ErrBadRequest`，底层校验错误不直接返回；
 - Handler 返回 error 时调用 `Context.Fail`，成功结果调用 `Context.OK`。
 
 绑定器不负责业务校验、权限判断、事务和数据库操作。
@@ -274,81 +275,163 @@ func (c *Context) Fail(err error)
 
 ```go
 type Error struct {
-	Code       int
-	HTTPStatus int
-	Message    string
-	Cause      error
+	Code    int
+	Message string
+	err     error  // 原始错误（内部字段）
+	status  int    // HTTP 状态码（内部字段）
 }
 
-func NewError(code, status int, message string) *Error
-func WrapError(cause error, code, status int, message string) *Error
+func NewError(code int, message string) *Error
+func NewWithStatus(code int, status int, message string) *Error
+func Wrap(err error, code int, message string) *Error
+func WrapWithStatus(err error, code int, status int, message string) *Error
+
+// 链式方法（返回新实例）
+func (e *Error) WithErr(err error) *Error
+func (e *Error) WithStatus(status int) *Error
+func (e *Error) WithMessage(message string) *Error
+func (e *Error) WithMessagef(format string, args ...any) *Error
+
+// 查询方法
+func (e *Error) Error() string
+func (e *Error) Unwrap() error
+func (e *Error) Status() int
 ```
 
-预定义错误至少包括：
+预定义错误：
 
 ```go
 var (
-	ErrBadRequest   = NewError(1001, http.StatusBadRequest, "bad request")
-	ErrUnauthorized = NewError(1002, http.StatusUnauthorized, "unauthorized")
-	ErrForbidden    = NewError(1003, http.StatusForbidden, "forbidden")
-	ErrNotFound     = NewError(1004, http.StatusNotFound, "not found")
-	ErrInternal     = NewError(1000, http.StatusInternalServerError, "internal server error")
+	ErrBadRequest          = NewWithStatus(1001, http.StatusBadRequest, "请求无效")
+	ErrUnauthorized        = NewWithStatus(1002, http.StatusUnauthorized, "未授权")
+	ErrForbidden           = NewWithStatus(1003, http.StatusForbidden, "禁止访问")
+	ErrNotFound            = NewWithStatus(1004, http.StatusNotFound, "资源未找到")
+	ErrMethodNotAllowed    = NewWithStatus(1005, http.StatusMethodNotAllowed, "方法不允许")
+	ErrConflict            = NewWithStatus(1006, http.StatusConflict, "资源冲突")
+	ErrTooManyRequests     = NewWithStatus(1007, http.StatusTooManyRequests, "请求过多")
+	ErrInternal            = NewWithStatus(1000, http.StatusInternalServerError, "内部服务器错误")
+	ErrServiceUnavailable  = NewWithStatus(1008, http.StatusServiceUnavailable, "服务不可用")
+	ErrGatewayTimeout      = NewWithStatus(1009, http.StatusGatewayTimeout, "网关超时")
 )
 ```
 
-`Error` 实现 `error` 和 `Unwrap`，业务层可以通过 `errors.Is`/`errors.As` 检查 Cause。
-`Context.Fail` 对外只输出安全的 `Message`，不能把 `Cause.Error()`、SQL、Redis key、连接地址
-或堆栈写入响应。原始 Cause 只能交给日志或 tracing 记录。
+**实现要点：**
 
-非 Aurora Error 的未知错误统一映射为 `ErrInternal`，响应状态为 500。
+- `Error` 实现 `error` 接口和 `Unwrap()`，业务层可以通过 `errors.Is`/`errors.As` 检查原因
+- `Context.Fail` 自动调用 `c.Abort()` 中止后续 Handler，对外只输出安全的 `Message`
+- 不能把 `err.Error()`、SQL、Redis key、连接地址或堆栈写入响应，原始错误只交给日志或 tracing
+- 非 Aurora Error 的未知错误统一映射为 `ErrInternal`，响应状态为 500
+- 链式方法返回新实例，避免污染预定义错误
 
 ## 10. 通用中间件
 
 默认顺序：
 
 ```text
-RequestID -> Tracing -> Recovery -> AccessLog -> application middleware -> Handler
+RequestID -> Metrics -> Recovery -> Tracing -> AccessLog -> application middleware -> Handler
 ```
+
+所有中间件通过配置开关控制，运行时依赖（Logger、TracingRuntime、MeterProvider）通过 Option 注入。
 
 ### RequestID
 
-- 读取 `X-Request-ID`；
-- 只接受长度受限的 ASCII 字母、数字、`-`、`_`、`.`、`:`；
-- 非法或为空时使用 `crypto/rand` 生成 ID；
-- 写入 Aurora Context、request context 和响应头；
-- 提供 `RequestIDFromContext(context.Context) string` 辅助函数。
+```go
+func RequestIDMiddleware() Middleware
+```
+
+- 读取 `X-Request-ID` 请求头；
+- 为空时使用 `uuid.New()` 生成新的 UUID；
+- 写入 Context (`request_id` key) 和响应头 `X-Request-ID`；
+- 可通过 `c.TraceID()` 获取。
+
+### Metrics
+
+HTTP 指标通过注入的 OpenTelemetry `metric.MeterProvider` 采集。启用 Metrics 时必须注入 Provider；
+Aurora 只创建和使用 Meter，不负责关闭 Provider。
+
+```go
+func WithMetricsProvider(provider metric.MeterProvider) Option
+```
+
+采集以下指标：
+
+- `http.server.active_requests`：当前处理中的请求数；
+- `http.server.request.duration`：请求耗时，单位秒；
+- `http.server.request.body.size`：请求体大小，单位字节；
+- `http.server.response.body.size`：响应体大小，单位字节。
+
+指标属性只包含 `http.request.method`、`http.route` 和 `http.response.status_code`。
+`http.route` 使用路由模板；未匹配路由不记录原始 URL，避免动态路径造成高基数。
+不记录 query、Cookie、Authorization、RequestID、TraceID、客户端 IP 或用户输入。
+请求体大小在响应产生前记录，因此只包含 method 和 route；耗时与响应体大小还包含最终状态码。
 
 ### Recovery
 
-- 捕获业务 Handler panic；
-- 记录 panic 值、stacktrace、request ID 和 trace ID；
-- 响应尚未写出时返回 `ErrInternal`；
-- 响应已经写出时只 `Abort`，不追加第二个响应；
-- `http.ErrAbortHandler` 按 net/http 语义重新 panic，不伪装成业务错误；
-- 不依赖不存在的业务包，允许通过 Option 注入自定义恢复响应器。
+```go
+func RecoveryMiddleware(logger *logger.Logger) Middleware
+```
+
+- 捕获业务 Handler 和后续中间件的 panic；
+- 使用注入的 logger 记录 panic 信息（error、request_id、method、path、client_ip）；
+- 自动调用 `c.Fail(ErrInternal)` 返回统一错误响应；
+- 如果没有注入 logger，只返回错误响应不记录日志。
+
+### Tracing
+
+```go
+func TracingMiddleware(rt TracingRuntime) Middleware
+```
+
+- 使用注入的 OpenTelemetry Tracer 创建 Span；
+- 从请求的 context 中提取 trace context；
+- 设置 Span 属性：http.method、http.url、http.route、http.client_ip、http.status_code；
+- 将新的 context 设置回 gin.Context；
+- 如果没有注入 tracer，跳过处理。
 
 ### AccessLog
 
-只记录低敏感、低基数信息：
-
-```text
-method, route template, status, latency, client ip, request id, trace id
+```go
+func AccessLogMiddleware(logger *logger.Logger) Middleware
 ```
 
-优先使用 `c.FullPath()`，没有路由模板时才使用 URL path。默认不记录 query、Authorization、
-Cookie、请求体、User-Agent、完整 header 和错误原文。日志使用 Aurora logger 的结构化接口，
-不硬编码特定项目名或 ANSI 颜色。
+记录请求信息：
+
+- 使用 `[Aurora]` 纯文本格式输出访问日志，不添加 JSON 外层或结构化字段
+- 格式为：`[Aurora] 时间 | 状态码 | 耗时 | 客户端 IP | 方法 路径 trace_id=...`
+- 不记录 query、Authorization、Cookie、请求体和 User-Agent
+
+**配置示例：**
+
+```go
+cfg := aurora.Config{
+    Middleware: aurora.MiddlewareConfig{
+        RequestID: true,  // 默认开启
+        Recovery:  true,  // 默认开启
+        AccessLog: true,  // 默认开启
+        Tracing:   false, // 默认关闭
+        Metrics:   false, // 默认关闭
+    },
+}
+
+engine, err := aurora.New(cfg,
+    aurora.WithLogger(logger),
+    aurora.WithTracingRuntime(tracingRuntime),
+)
+```
+
+访问日志使用请求 URL path，并在 trace ID 存在时追加 `trace_id=...`。日志前缀固定为 `[Aurora]`，
+不记录 query、Authorization、Cookie、请求体、User-Agent、完整 header 和错误原文。
 
 ### Tracing
 
 通过 Option 注入：
 
 ```go
-func WithTracerProvider(
-	provider trace.TracerProvider,
-	propagator propagation.TextMapPropagator,
-) Option
+func WithTracingRuntime(rt TracingRuntime) Option
 ```
+
+`TracingRuntime` 由应用负责实现，封装 TracerProvider、Propagator 以及上下文提取和注入。Aurora
+只借用该运行时，不负责关闭应用拥有的 tracing provider。
 
 Tracing middleware：
 
@@ -356,73 +439,247 @@ Tracing middleware：
 2. 使用注入的 provider 创建 HTTP server span；
 3. 将带 span 的 context 写回 `*http.Request`；
 4. 使用 `METHOD + route template` 作为 span name，避免动态路径高基数；
-5. 写入 trace ID 到 Context，按配置写入 `X-Trace-ID` 响应头；
+5. 将 trace ID 保存在请求 Context，供 `c.TraceID()` 和访问日志使用；
 6. 请求结束后记录路由、状态码和响应大小，5xx 标记为错误；
-7. 未注入 provider 时使用 OpenTelemetry no-op/global API，不创建或关闭 Provider。
+7. 未注入 tracing runtime 时跳过 tracing，不创建或关闭应用拥有的 Provider。
 
 ## 11. Option 与外部依赖
 
 ```go
-type Option func(*options) error
+type Option func(*Engine)
 
-func WithLogger(log Logger) Option
-func WithTracerProvider(provider trace.TracerProvider, propagator propagation.TextMapPropagator) Option
-func WithRecoveryHandler(fn RecoveryHandler) Option
+func WithLogger(logger *logger.Logger) Option
+func WithTracingRuntime(rt TracingRuntime) Option
+func WithMetricsProvider(provider metric.MeterProvider) Option
 ```
 
-根包不能在公开 API 中要求调用方导入 `core/logger`。因此第一版定义最小公开日志接口：
+**实际实现：**
+
+- 使用 `core/logger.Logger` 作为日志接口，访问日志通过 `InfoText` 保持纯文本格式
+- 使用 `TracingRuntime` 注入 OpenTelemetry Provider、Propagator 和上下文传播能力
+- 使用 `metric.MeterProvider` 注入 HTTP 指标采集能力
+- Option 直接修改 `*Engine` 结构体字段
+- 中间件通过 Engine 的字段获取注入的依赖
+
+**使用示例：**
 
 ```go
-type Logger interface {
-	InfoContext(context.Context, string, ...Field)
-	ErrorContext(context.Context, string, ...Field)
+logger, err := loggerpkg.New(&loggerpkg.Config{Output: loggerpkg.OutputStdout})
+if err != nil {
+    return err
 }
+tracingRuntime := newTracingRuntime(provider, propagator)
+
+engine, err := aurora.New(cfg,
+    aurora.WithLogger(logger),
+    aurora.WithTracingRuntime(tracingRuntime),
+)
 ```
-
-`Field` 需要是根包可导出的轻量字段类型，或由 logger adapter 提供；根包不得把 zap 类型暴露
-给业务代码。Aurora 当前 `core/logger.Logger` 通过 adapter 接入该接口。
-
-如果公开 Logger 接口在实现阶段造成过多适配复杂度，可以先将日志 Option 设计为内部适配层，
-但必须保证根包公开 API 不直接暴露 `internal` 路径。
 
 ## 12. 生命周期
 
+```go
+func New(cfg Config, opts ...Option) (*Engine, error)
+func (e *Engine) Start() error
+func (e *Engine) Serve(net.Listener) error
+func (e *Engine) Shutdown(context.Context) error
+func (e *Engine) Run(context.Context) error
+```
+
+**生命周期流程：**
+
 ```text
 New
-  -> 注册全局 middleware、路由和应用依赖
-  -> Start 或 Serve
+  -> 注册全局 middleware、路由
+  -> Start / Serve / Run
   -> Listening
   -> Shutdown(ctx)
 ```
 
-状态要求：
+**状态要求：**
 
-- `New` 不监听端口；
-- `Start` 内部调用 `net.Listen`，成功后调用 `http.Server.Serve`；
-- `Serve` 接管调用方传入的 listener，Server 关闭时负责关闭它；
-- 同一个 Engine 只能成功启动一次；重复启动返回稳定的 `ErrServerStarted`；
-- Shutdown 后再次启动返回 `ErrServerClosed`；
-- `Shutdown(nil)` 返回 `ErrNilContext`；
-- `Shutdown` 调用 `http.Server.Shutdown`，停止接收新连接、关闭空闲连接并等待活动请求；
-- Shutdown 超时返回 context/HTTP Server 错误，不强制中断 Handler；
-- WebSocket/hijack 连接由独立连接管理器负责；
-- 重复或并发 Shutdown 必须安全，不能二次关闭 listener。
+- `New` 只创建 Engine，不监听端口，不启动服务
+- `Start` 内部调用 `net.Listen(cfg.Addr)`，成功后阻塞运行 `http.Server.Serve`
+- `Serve` 接管调用方传入的 listener，Server 关闭时负责关闭它
+- `Run` 是便利 API：启动服务并在 context 取消时自动调用 Shutdown
+- 同一个 Engine 只能成功启动一次；重复启动返回错误
+- `Shutdown` 调用 `http.Server.Shutdown`，停止接收新连接、关闭空闲连接并等待活动请求
+- Shutdown 超时由传入的 context deadline 控制
+- 重复或并发 Shutdown 必须安全
 
-`Run(ctx)` 是便利 API：启动服务并在 context 取消时调用 Shutdown。它不监听系统信号。
-应用入口负责把 `signal.NotifyContext` 传入 `Run`，并在 HTTP Server 关闭后按应用顺序关闭其他资源。
+**使用示例：**
 
-推荐应用关闭顺序：
+```go
+// 方式 1: 使用 Run（推荐）
+ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+defer cancel()
 
-```text
-停止接收应用信号
-  -> Aurora.Shutdown
-  -> database.Close / redis.Close / mq.Close
-  -> tracing.Shutdown
-  -> metrics.Shutdown
-  -> logger.Sync/Close
+if err := engine.Run(ctx); err != nil {
+    log.Fatal(err)
+}
+
+// 方式 2: 手动控制
+go func() {
+    if err := engine.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+        log.Fatal(err)
+    }
+}()
+
+// 等待信号
+<-sigChan
+
+// 优雅关闭
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+engine.Shutdown(shutdownCtx)
 ```
 
-## 13. 应用示例
+**资源管理：**
+
+- Engine 只拥有并关闭：Gin Engine、http.Server、net.Listener
+- Logger、TracerProvider、数据库、Redis、MQ 由应用组合根拥有
+- Aurora 只借用它们，不在 Shutdown 中关闭它们
+
+## 13. 完整示例
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "os/signal"
+    "time"
+
+    "github.com/surge-go/aurora"
+    loggerpkg "github.com/surge-go/aurora/core/logger"
+    "go.opentelemetry.io/otel"
+)
+
+// 定义请求和响应类型
+type CreateUserReq struct {
+    Name  string `json:"name" binding:"required"`
+    Email string `json:"email" binding:"required,email"`
+}
+
+type User struct {
+    ID        int64     `json:"id"`
+    Name      string    `json:"name"`
+    Email     string    `json:"email"`
+    CreatedAt time.Time `json:"created_at"`
+}
+
+func main() {
+    // 创建日志器
+    logger, err := loggerpkg.New(&loggerpkg.Config{
+        Level:  loggerpkg.LevelInfo,
+        Output: loggerpkg.OutputStdout,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 配置 Aurora
+    cfg := aurora.DefaultConfig()
+    cfg.Addr = ":8080"
+    cfg.Mode = "release"
+    cfg.Middleware.Tracing = true
+
+    // 创建 Engine（注入 logger 和 tracer）
+    engine, err := aurora.New(cfg,
+        aurora.WithLogger(logger),
+        aurora.WithTracingRuntime(tracingRuntime),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 注册路由
+    engine.GET("/health", aurora.BindRE(healthCheck))
+
+    api := engine.Group("/api/v1")
+    {
+        users := api.Group("/users")
+        {
+            users.POST("", aurora.Bind(createUser))
+            users.GET("/:id", aurora.BindR(getUser))
+        }
+    }
+
+    // 启动服务（监听中断信号）
+    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer cancel()
+
+    logger.Info("Starting Aurora server", "addr", cfg.Addr)
+    if err := engine.Run(ctx); err != nil {
+        logger.Error("Server stopped", "error", err)
+    }
+}
+
+// 业务 Handler 实现
+func healthCheck(c *aurora.Context) error {
+    return nil
+}
+
+func createUser(c *aurora.Context, req *CreateUserReq) (*User, error) {
+    // 业务逻辑：创建用户
+    user := &User{
+        ID:        time.Now().Unix(),
+        Name:      req.Name,
+        Email:     req.Email,
+        CreatedAt: time.Now(),
+    }
+
+    // 可以通过 c.Context() 传递给数据库
+    // db.CreateUser(c.Context(), user)
+
+    return user, nil
+}
+
+func getUser(c *aurora.Context) (*User, error) {
+    id := c.Param("id")
+
+    // 业务逻辑：查询用户
+    // user, err := db.GetUser(c.Context(), id)
+
+    return &User{
+        ID:        1,
+        Name:      "Alice",
+        Email:     "alice@example.com",
+        CreatedAt: time.Now(),
+    }, nil
+}
+```
+
+## 14. 实现状态
+
+### ✅ 已完成
+
+- **aurora.go** - Engine 核心和生命周期管理
+- **config.go** - 配置模型、验证和默认值
+- **context.go** - Context 封装（67个方法）
+- **handler.go** - 4种泛型绑定适配器
+- **router.go** - RouterGroup 和路由注册
+- **response.go** - 统一响应格式
+- **errors.go** - Error 类型和预定义错误
+- **middleware.go** - 默认中间件装配
+- **middleware.go** - 默认中间件装配和 HTTP 指标中间件
+- **option.go** - WithLogger、WithTracingRuntime 和 WithMetricsProvider
+
+### 🔄 待优化
+
+- 参数绑定：继续补充不同 Content-Type 和 DELETE 请求的边界测试
+
+### 📋 未来扩展
+
+- CORS 中间件
+- 限流中间件
+- 认证授权中间件
+- OpenAPI/Swagger 支持
+- 文件上传支持
+- WebSocket 支持
+## 15. 应用示例
 
 ```go
 app, err := aurora.New(aurora.Config{
@@ -448,26 +705,18 @@ return app.Run(ctx)
 业务函数只接收标准 context：
 
 ```go
-func createUser(ctx context.Context, req *CreateUserRequest) (*User, error) {
-	return userService.Create(ctx, req)
+func createUser(c *aurora.Context, req *CreateUserRequest) (*User, error) {
+	return userService.Create(c.Context(), req)
 }
 ```
 
-需要 Gin 特有能力时使用：
-
-```go
-app.Gin().GET("/raw", func(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"ok": true})
-})
-```
-
-## 14. 实施阶段
+## 16. 实施阶段
 
 ### 阶段一：HTTP 和路由核心
 
 - 引入 Gin；
 - 实现 Config、默认值和校验；
-- 实现 Engine、RouterGroup、原生 Gin 适配；
+- 实现 Engine、RouterGroup 和内部路由适配；
 - 实现 Start、Serve、Shutdown、Run；
 - 覆盖监听失败、临时端口、重复启动、优雅关闭和并发关闭。
 
@@ -488,12 +737,12 @@ app.Gin().GET("/raw", func(c *gin.Context) {
 
 - 注入现有 tracing Provider 和 propagator；
 - 实现 HTTP tracing middleware；
-- 增加 HTTP metrics 的注入边界，但不在根包创建 MeterProvider；
-- 覆盖 trace parent、路由模板、5xx 和关闭顺序。
+- 注入 MeterProvider 并实现 HTTP metrics middleware，不在根包创建或关闭 MeterProvider；
+- 覆盖 trace parent、指标路由模板、5xx、低基数属性和关闭顺序。
 
 OpenAPI、路由元信息、Swagger UI 和自动文档生成不属于以上阶段，后续单独设计。
 
-## 15. 测试与验收
+## 17. 测试与验收
 
 至少覆盖：
 
@@ -506,6 +755,7 @@ OpenAPI、路由元信息、Swagger UI 和自动文档生成不属于以上阶�
 - 泛型绑定的 body、query、URI、混合参数和校验失败；
 - Error 的安全响应、Cause 保留和未知错误映射；
 - Tracing 的上游提取、span context 传递、路由模板和 5xx 状态。
+- HTTP Metrics 的 Provider 注入、成功/错误状态、panic、未匹配路由和低基数属性。
 
 验证命令：
 

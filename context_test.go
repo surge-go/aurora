@@ -18,13 +18,14 @@ func testContext(t *testing.T, method, target string) (*Context, *httptest.Respo
 	recorder := httptest.NewRecorder()
 	ginContext, _ := gin.CreateTestContext(recorder)
 	ginContext.Request = httptest.NewRequest(method, target, nil)
-	return newContext(ginContext), recorder
+	return &Context{ctx: ginContext}, recorder
 }
 
 func TestContextRequestAndValues(t *testing.T) {
 	c, _ := testContext(t, "GET", "/users/42?page=2&page=3")
-	c.Gin().Params = gin.Params{{Key: "id", Value: "42"}}
-	c.Gin().Set("role", "admin")
+	// 直接设置 gin.Context 的 Params
+	c.ctx.Params = gin.Params{{Key: "id", Value: "42"}}
+	c.Set("role", "admin")
 
 	if got := c.Param("id"); got != "42" {
 		t.Fatalf("Param(id) = %q, want 42", got)
@@ -43,7 +44,7 @@ func TestContextRequestAndValues(t *testing.T) {
 	}
 
 	requestContext := context.WithValue(c.Context(), contextKey("key"), "value")
-	c.Gin().Request = c.Request().WithContext(requestContext)
+	c.ctx.Request = c.Request().WithContext(requestContext)
 	if got := c.Context().Value(contextKey("key")); got != "value" {
 		t.Fatalf("Context().Value(key) = %v, want value", got)
 	}
@@ -55,13 +56,13 @@ func TestContextBindingAndHeaders(t *testing.T) {
 	ginContext, _ := gin.CreateTestContext(recorder)
 	ginContext.Request = httptest.NewRequest("POST", "/users", strings.NewReader(`{"name":"alice"}`))
 	ginContext.Request.Header.Set("Content-Type", "application/json")
-	c := newContext(ginContext)
+	c := &Context{ctx: ginContext}
 
 	var request struct {
 		Name string `json:"name" binding:"required"`
 	}
-	if err := c.BindJSON(&request); err != nil {
-		t.Fatalf("BindJSON() error = %v", err)
+	if err := c.ShouldBindJSON(&request); err != nil {
+		t.Fatalf("ShouldBindJSON() error = %v", err)
 	}
 	if request.Name != "alice" {
 		t.Fatalf("bound name = %q, want alice", request.Name)
@@ -82,7 +83,7 @@ func TestContextOKIncludesTraceID(t *testing.T) {
 		TraceFlags: trace.FlagsSampled,
 		Remote:     true,
 	})
-	c.Gin().Request = c.Request().WithContext(trace.ContextWithRemoteSpanContext(c.Context(), parent))
+	c.ctx.Request = c.Request().WithContext(trace.ContextWithRemoteSpanContext(c.Context(), parent))
 
 	c.OK(map[string]string{"status": "ok"})
 
@@ -132,7 +133,7 @@ func TestContextFailUnknownErrorUsesInternal(t *testing.T) {
 
 func TestNilContextIsSafe(t *testing.T) {
 	var c *Context
-	if c.Gin() != nil || c.Request() != nil || c.FullPath() != "" || c.TraceID() != "" {
+	if c.Request() != nil || c.FullPath() != "" || c.TraceID() != "" {
 		t.Fatal("nil context accessors returned unexpected values")
 	}
 	if c.Context() == nil {
@@ -141,8 +142,8 @@ func TestNilContextIsSafe(t *testing.T) {
 	if value, ok := c.Get("missing"); value != nil || ok {
 		t.Fatalf("nil context Get(missing) = (%v, %t), want (nil, false)", value, ok)
 	}
-	if err := c.Bind(nil); err == nil {
-		t.Fatal("Bind(nil context) error = nil")
+	if err := c.ShouldBind(nil); err == nil {
+		t.Fatal("ShouldBind(nil context) error = nil")
 	}
 }
 

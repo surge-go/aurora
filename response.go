@@ -12,6 +12,7 @@ type Response[T any] struct {
 	TraceID string `json:"trace_id,omitempty"`
 }
 
+// NewResponse 创建统一响应。traceID 为空时 JSON 序列化会省略 trace_id 字段。
 func NewResponse[T any](code int, data T, message string, traceId string) *Response[T] {
 	return &Response[T]{
 		Code:    code,
@@ -29,6 +30,7 @@ type PageResp[T any] struct {
 }
 
 // NewPageResp 构造分页响应，返回指针避免大切片值拷贝。
+// nil 列表会规范化为空数组，避免客户端收到 null。
 func NewPageResp[T any](list []T, total int64) *PageResp[T] {
 	if list == nil {
 		list = make([]T, 0)
