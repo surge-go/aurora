@@ -150,7 +150,8 @@ curl -X POST http://localhost:8080/users \
 
 ### Engine 与生命周期
 
-`Engine` 同时拥有 Gin Engine、`http.Server` 和 `net.Listener`,是 Aurora 唯一的生命周期对象。
+`Engine` 同时拥有 Gin Engine、`http.Server` 和 `net.Listener`。需要统一初始化和关闭 core
+资源时，可以使用嵌入 Engine 的 `Lifecycle`。
 
 ```go
 engine, err := aurora.New(cfg, opts...)   // 仅创建,不监听端口
@@ -162,6 +163,95 @@ engine.ServeHTTP(w, r)                    // 实现 http.Handler,便于测试
 engine.Addr()                             // 启动后的实际地址(支持 ":0")
 engine.Listening()                        // 是否处于监听状态
 ```
+
+`NewLifecycle` 从配置文件创建 Aurora 和已启用的 core 资源。无参数时使用
+`config/aurora.yaml`；文件不存在会写入默认模板。它不会注册路由，也不会启动 HTTP 服务：
+
+```go
+engine, err := aurora.NewLifecycle()
+if err != nil {
+    log.Fatal(err)
+}
+
+engine.GET("/health", healthHandler)
+if err := engine.Run(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+默认配置不会启用 database、Redis、MQ、tracing 或 metrics。`Lifecycle` 会在 `Run`、`Start`
+或 `Serve` 返回后，按依赖逆序关闭它创建的资源；也可以显式调用
+`engine.Shutdown(ctx)` 或 `engine.Close(ctx)`。
+
+首次启动生成的 `config/aurora.yaml` 是完整配置模板，已经列出 logger、tracing、metrics、
+database、Redis 和三种 MQ adapter 的可序列化字段。外部资源默认保持关闭，确认连接地址、
+凭据和 TLS 文件后再逐项开启。常用配置结构如下，生成文件中还包含连接池、重试、监控、
+日志轮转和消息消费策略等进阶字段：
+
+```yaml
+aurora:
+  addr: ":8080"
+  mode: release
+  middleware:
+    request_id: true
+    recovery: true
+    access_log: true
+    tracing: false
+    metrics: false
+
+# Uncomment an optional tracing block to enable it.
+# tracing:
+#   service_name: aurora
+#   service_version: "0.0.1"
+#   endpoint: "localhost:4317"
+#   protocol: grpc
+#   insecure: true
+
+# Uncomment an optional metrics block to enable it.
+# metrics:
+#   service_name: aurora
+#   service_version: "0.0.1"
+#   endpoint: "localhost:4317"
+#   protocol: grpc
+#   insecure: true
+
+logger:
+  level: info
+  format: console
+  outputs: [stdout]
+  add_caller: true
+  stacktrace_level: error
+
+# Uncomment an optional database block to enable it.
+# database:
+#   driver: sqlite
+#   dsn: "./data/aurora.db"
+#   pool:
+#     max_open_conns: 20
+#     max_idle_conns: 5
+#     conn_max_lifetime: 1h
+
+# Uncomment an optional Redis block to enable it.
+# redis:
+#   mode: standalone
+#   addrs: ["127.0.0.1:6379"]
+#   timeout:
+#     dial_timeout: 5s
+#     read_timeout: 3s
+#     write_timeout: 3s
+
+# Uncomment an optional MQ block to enable it.
+# mq:
+#   driver: redis
+#   redis:
+#     group: aurora
+#     consumer: aurora
+# rabbitmq and kafka sections are included in the generated template.
+```
+
+未写入配置段的组件不会初始化；启用 tracing 或 metrics 后必须替换为实际 collector 地址。
+Redis Streams 依赖同一份 `redis` 客户端，启用 MQ Redis adapter 时也必须同时配置 Redis。
+配置中的运行时 client、dialer、provider 和 logger 不会写入 YAML，而是在 `NewLifecycle` 内部装配。
 
 要点:
 
@@ -459,6 +549,7 @@ HTTP 服务的生命周期对象,持有 Gin Engine、`http.Server` 与 `net.List
 
 ```go
 func New(cfg Config, opts ...Option) (*Engine, error)
+func NewLifecycle(path ...string) (*Lifecycle, error)
 
 // 路由注册(启动前)
 func (e *Engine) GET(path string, handlers ...any)
@@ -484,6 +575,17 @@ func (e *Engine) Shutdown(ctx context.Context) error
 func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request)
 func (e *Engine) Addr() string
 func (e *Engine) Listening() bool
+```
+
+`Lifecycle` 嵌入 `*Engine`，并额外持有由 `NewLifecycle` 创建的 core 资源：
+
+```go
+func NewLifecycle(path ...string) (*Lifecycle, error)
+func (l *Lifecycle) Run(context.Context) error
+func (l *Lifecycle) Start() error
+func (l *Lifecycle) Serve(net.Listener) error
+func (l *Lifecycle) Shutdown(context.Context) error
+func (l *Lifecycle) Close(context.Context) error
 ```
 
 ### RouterGroup

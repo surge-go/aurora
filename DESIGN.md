@@ -4,13 +4,16 @@
 
 Aurora 根包 `github.com/surge-go/aurora` 是基于 Gin 的 Go Web 应用框架。
 第一阶段提供 HTTP 服务、路由、请求上下文、统一响应、业务错误、泛型绑定和通用中间件。
+根包同时提供可选的 `NewLifecycle` bootstrap，用于从 `config/aurora.yaml` 组合 core
+基础设施并统一管理它们的生命周期。
 
 Web 框架代码直接放在仓库根目录，根包直接持有 Gin Engine 和 `net/http.Server`；不新增
 `core/server` 子包。现有 `core` 下的配置、日志、Tracing、Metrics、数据库、
 Redis 和 MQ 仍作为独立基础设施包存在，由应用组合根创建并注入。
 
-本阶段明确不包含 OpenAPI、路由元信息、Swagger UI、自动文档生成、认证授权、数据库/Redis/MQ
-自动装配和业务模块代码。
+本阶段明确不包含 OpenAPI、路由元信息、Swagger UI、自动文档生成、认证授权和业务模块代码。
+普通 `New` 仍不自动装配数据库、Redis、MQ 或可观测性资源；需要统一 bootstrap 时使用
+`NewLifecycle`。
 
 ## 2. 目标与非目标
 
@@ -37,6 +40,7 @@ Redis 和 MQ 仍作为独立基础设施包存在，由应用组合根创建并�
 
 ```text
 aurora.go       # Engine、New、生命周期和根级选项
+lifecycle.go    # NewLifecycle、core bootstrap 和资源关闭
 config.go       # Config、MiddlewareConfig 和默认值
 context.go      # HTTP Context 封装
 handler.go      # HandlerFunc、Middleware 和泛型绑定
@@ -81,14 +85,21 @@ application bootstrap ----> core/config, tracing, metrics, database, redis, mq
 application bootstrap ----> aurora options (inject runtime dependencies)
 ```
 
-Aurora Engine 所有并关闭的资源只有：
+普通 Aurora Engine 所有并关闭的资源只有：
 
 - Gin Engine；
 - `http.Server`；
 - `net.Listener`（由 `Start` 创建或由 `Serve` 接管）。
 
 Logger、TracerProvider、Propagator、MeterProvider、数据库连接、Redis 客户端和 MQ 客户端由
-应用组合根拥有。Aurora 只借用它们，不在 `Shutdown` 中关闭它们。
+应用组合根拥有。普通 `New` 创建的 Engine 只借用它们，不在 `Shutdown` 中关闭它们。
+
+`NewLifecycle` 是显式的应用组合根：它加载或生成默认配置，创建启用的 logger、tracing、
+metrics、database、Redis 和 MQ 资源，并由返回的 `Lifecycle` 持有和关闭这些资源。关闭顺序
+为 HTTP Server、MQ、database、Redis、metrics、tracing、logger、config；默认 database、
+Redis、MQ、tracing 和 metrics 均关闭，首次启动不会连接外部服务。配置文件中的这些外部
+资源使用可选配置段：配置段缺失（例如整段保持注释）时解析为 `nil`，不会初始化；不使用
+`enabled: false` 作为额外开关。
 
 ## 5. 配置模型
 
@@ -153,6 +164,27 @@ type Engine struct {
 
 func New(cfg Config, opts ...Option) (*Engine, error)
 
+// 从 config/aurora.yaml 创建并管理完整应用生命周期；不启动 HTTP 服务。
+func NewLifecycle(path ...string) (*Lifecycle, error)
+
+type Lifecycle struct {
+	*Engine
+	Config      *config.Config
+	Logger      *logger.Logger
+	Tracing     *tracing.Runtime
+	Metrics     *metrics.Runtime
+	Database    *gorm.DB
+	Redis       redis.UniversalClient
+	MQPublisher mq.Publisher
+	MQConsumer  mq.Consumer
+}
+
+func (l *Lifecycle) Run(context.Context) error
+func (l *Lifecycle) Start() error
+func (l *Lifecycle) Serve(net.Listener) error
+func (l *Lifecycle) Shutdown(context.Context) error
+func (l *Lifecycle) Close(context.Context) error
+
 func (e *Engine) GET(path string, handlers ...HandlerFunc)
 func (e *Engine) POST(path string, handlers ...HandlerFunc)
 func (e *Engine) PUT(path string, handlers ...HandlerFunc)
@@ -175,8 +207,10 @@ func (e *Engine) Addr() string
 func (e *Engine) Listening() bool
 ```
 
-`New` 只创建 Engine，不监听端口。路由和全局应用中间件必须在 `Start`、`Serve` 或 `Run`
-之前注册；服务开始监听后不支持修改路由树。
+`New` 和 `NewLifecycle` 都只创建对象，不监听端口。路由和全局应用中间件必须在 `Start`、
+`Serve` 或 `Run` 之前注册；服务开始监听后不支持修改路由树。`NewLifecycle` 在没有路径参数
+时使用当前工作目录下的 `config/aurora.yaml`，文件不存在时创建默认模板；显式传入的路径
+不会被覆盖。
 
 ## 7. Handler、Context 和路由分组
 
@@ -486,6 +520,17 @@ func (e *Engine) Shutdown(context.Context) error
 func (e *Engine) Run(context.Context) error
 ```
 
+当应用希望由 Aurora 统一组合 core 资源时使用：
+
+```go
+func NewLifecycle(path ...string) (*Lifecycle, error)
+func (l *Lifecycle) Run(context.Context) error
+func (l *Lifecycle) Start() error
+func (l *Lifecycle) Serve(net.Listener) error
+func (l *Lifecycle) Shutdown(context.Context) error
+func (l *Lifecycle) Close(context.Context) error
+```
+
 **生命周期流程：**
 
 ```text
@@ -495,6 +540,9 @@ New
   -> Listening
   -> Shutdown(ctx)
 ```
+
+`NewLifecycle` 在此流程前增加配置加载和资源创建；`Lifecycle` 的 Run、Start、Serve 返回后
+会自动执行一次资源关闭。显式调用 Shutdown 或 Close 也会执行同一套幂等关闭流程。
 
 **状态要求：**
 
@@ -666,6 +714,7 @@ func getUser(c *aurora.Context) (*User, error) {
 - **middleware.go** - 默认中间件装配
 - **middleware.go** - 默认中间件装配和 HTTP 指标中间件
 - **option.go** - WithLogger、WithTracingRuntime 和 WithMetricsProvider
+- **lifecycle.go** - 配置文件 bootstrap、core 资源初始化和统一生命周期关闭
 
 ### 🔄 待优化
 

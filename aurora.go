@@ -297,6 +297,23 @@ func (e *Engine) Serve(listener net.Listener) error {
 	if listener == nil {
 		return errors.New("listener cannot be nil")
 	}
+	return e.serve(context.Background(), listener)
+}
+
+// serve is the context-aware implementation used by Lifecycle. The public
+// Serve method keeps the original non-cancellable API, while Lifecycle can
+// cancel a pending listener handoff during concurrent shutdown.
+func (e *Engine) serve(ctx context.Context, listener net.Listener) error {
+	if listener == nil {
+		return errors.New("listener cannot be nil")
+	}
+	if ctx == nil {
+		return errors.New("context cannot be nil")
+	}
+	if err := ctx.Err(); err != nil {
+		_ = listener.Close()
+		return nil
+	}
 
 	// Serve 与 Start 共用 started 状态，但网络监听器由调用方提供；关闭时
 	// Engine 仍会负责关闭该 listener。
@@ -304,6 +321,11 @@ func (e *Engine) Serve(listener net.Listener) error {
 	if e.started {
 		e.mu.Unlock()
 		return errors.New("server already started")
+	}
+	if err := ctx.Err(); err != nil {
+		e.mu.Unlock()
+		_ = listener.Close()
+		return nil
 	}
 
 	server := e.newHTTPServer()
