@@ -11,9 +11,10 @@ Web 框架代码直接放在仓库根目录，根包直接持有 Gin Engine 和 
 `core/server` 子包。现有 `core` 下的配置、日志、Tracing、Metrics、数据库、
 Redis 和 MQ 仍作为独立基础设施包存在，由应用组合根创建并注入。
 
-本阶段明确不包含 OpenAPI、路由元信息、Swagger UI、自动文档生成、认证授权和业务模块代码。
-普通 `New` 仍不自动装配数据库、Redis、MQ 或可观测性资源；需要统一 bootstrap 时使用
-`NewLifecycle`。
+本阶段明确不包含 OpenAPI、路由元信息、Swagger UI、自动文档生成和业务模块代码。根包不
+直接实现认证授权；通用 JWT/Redis 生命周期由独立的 `core/auth` 包设计和提供，认证中间件
+仍需由应用或后续适配层装配。普通 `New` 仍不自动装配数据库、Redis、MQ 或可观测性资源；
+需要统一 bootstrap 时使用 `NewLifecycle`。
 
 ## 2. 目标与非目标
 
@@ -61,10 +62,15 @@ core/metrics
 core/database
 core/redis
 core/mq
+core/auth
 ```
 
 如果后续某个中间件需要较多内部实现，可以新增根目录下的 `internal/` 子目录，但不把
 HTTP Server 再拆成 `core/server`，除非未来出现独立复用需求并重新评审包边界。
+
+`core/auth` 使用 JWT v5 和注入的 Redis 客户端管理 access/refresh token 生命周期。它不创建或
+关闭 Redis，也不属于根包默认中间件；使用方式和 `MaxSessionTTL`、`RevokeSubject` 分页契约见
+`core/auth/DESIGN.md`。
 
 ## 4. 依赖方向与所有权
 
@@ -95,9 +101,11 @@ Logger、TracerProvider、Propagator、MeterProvider、数据库连接、Redis �
 应用组合根拥有。普通 `New` 创建的 Engine 只借用它们，不在 `Shutdown` 中关闭它们。
 
 `NewLifecycle` 是显式的应用组合根：它加载或生成默认配置，创建启用的 logger、tracing、
-metrics、database、Redis 和 MQ 资源，并由返回的 `Lifecycle` 持有和关闭这些资源。关闭顺序
+metrics、database、Redis、Auth 和 MQ 资源，并由返回的 `Lifecycle` 持有和关闭这些资源。Auth
+配置段启用时必须同时启用 Redis，并在 `auth.signing_secret` 中提供至少 32 字节的签名密钥；
+配置文件必须由部署系统保护。Auth 不单独拥有或关闭 Redis。关闭顺序
 为 HTTP Server、MQ、database、Redis、metrics、tracing、logger、config；默认 database、
-Redis、MQ、tracing 和 metrics 均关闭，首次启动不会连接外部服务。配置文件中的这些外部
+Redis、Auth、MQ、tracing 和 metrics 均关闭，首次启动不会连接外部服务。配置文件中的这些外部
 资源使用可选配置段：配置段缺失（例如整段保持注释）时解析为 `nil`，不会初始化；不使用
 `enabled: false` 作为额外开关。
 
@@ -175,6 +183,7 @@ type Lifecycle struct {
 	Metrics     *metrics.Runtime
 	Database    *gorm.DB
 	Redis       redis.UniversalClient
+	Auth        *auth.Manager
 	MQPublisher mq.Publisher
 	MQConsumer  mq.Consumer
 }
@@ -541,7 +550,9 @@ New
   -> Shutdown(ctx)
 ```
 
-`NewLifecycle` 在此流程前增加配置加载和资源创建；`Lifecycle` 的 Run、Start、Serve 返回后
+`NewLifecycle` 在此流程前增加配置加载和资源创建；如果配置文件包含 `auth` 段，生命周期会
+使用同一 Redis 客户端创建 `auth.Manager`，业务代码通过 `lifecycle.Auth` 使用认证能力。
+`Lifecycle` 的 Run、Start、Serve 返回后
 会自动执行一次资源关闭。显式调用 Shutdown 或 Close 也会执行同一套幂等关闭流程。
 
 **状态要求：**

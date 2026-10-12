@@ -179,12 +179,12 @@ if err := engine.Run(ctx); err != nil {
 }
 ```
 
-默认配置不会启用 database、Redis、MQ、tracing 或 metrics。`Lifecycle` 会在 `Run`、`Start`
+默认配置不会启用 database、Redis、Auth、MQ、tracing 或 metrics。`Lifecycle` 会在 `Run`、`Start`
 或 `Serve` 返回后，按依赖逆序关闭它创建的资源；也可以显式调用
 `engine.Shutdown(ctx)` 或 `engine.Close(ctx)`。
 
 首次启动生成的 `config/aurora.yaml` 是完整配置模板，已经列出 logger、tracing、metrics、
-database、Redis 和三种 MQ adapter 的可序列化字段。外部资源默认保持关闭，确认连接地址、
+database、Redis、Auth 和三种 MQ adapter 的可序列化字段。外部资源默认保持关闭，确认连接地址、
 凭据和 TLS 文件后再逐项开启。常用配置结构如下，生成文件中还包含连接池、重试、监控、
 日志轮转和消息消费策略等进阶字段：
 
@@ -240,6 +240,16 @@ logger:
 #     read_timeout: 3s
 #     write_timeout: 3s
 
+# Uncomment an optional Auth block to enable JWT/Redis sessions. Protect the config file.
+# auth:
+#   key_prefix: aurora:auth:{auth}
+#   signing_secret: "replace-with-at-least-32-random-bytes"
+#   issuer: aurora
+#   audience: [aurora-client]
+#   access_ttl: 15m
+#   refresh_ttl: 168h
+#   max_session_ttl: 720h
+
 # Uncomment an optional MQ block to enable it.
 # mq:
 #   driver: redis
@@ -248,6 +258,9 @@ logger:
 #     consumer: aurora
 # rabbitmq and kafka sections are included in the generated template.
 ```
+
+启用 Auth 时，在配置中填写至少 32 字节的 `signing_secret`。`NewLifecycle` 会复用统一创建的 Redis 客户端，并通过 `lifecycle.Auth`
+提供 `*auth.Manager`；Auth 不单独拥有或关闭 Redis，`Lifecycle.Close` 会统一释放资源。
 
 未写入配置段的组件不会初始化；启用 tracing 或 metrics 后必须替换为实际 collector 地址。
 Redis Streams 依赖同一份 `redis` 客户端，启用 MQ Redis adapter 时也必须同时配置 Redis。

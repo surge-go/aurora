@@ -22,7 +22,7 @@ func TestNewLifecycleGeneratesDefaultConfig(t *testing.T) {
 	if lifecycle.Logger == nil {
 		t.Fatal("NewLifecycle() did not initialize logger")
 	}
-	if lifecycle.Tracing != nil || lifecycle.Metrics != nil || lifecycle.Database != nil || lifecycle.Redis != nil || lifecycle.MQPublisher != nil || lifecycle.MQConsumer != nil {
+	if lifecycle.Tracing != nil || lifecycle.Metrics != nil || lifecycle.Database != nil || lifecycle.Redis != nil || lifecycle.Auth != nil || lifecycle.MQPublisher != nil || lifecycle.MQConsumer != nil {
 		t.Fatal("commented optional configuration unexpectedly initialized a runtime")
 	}
 	if got := lifecycle.config.Addr; got != ":8080" {
@@ -40,7 +40,7 @@ func TestNewLifecycleGeneratesDefaultConfig(t *testing.T) {
 			t.Fatalf("default config is missing %q section", section)
 		}
 	}
-	for _, section := range []string{"# tracing:\n", "# metrics:\n", "# database:\n", "# redis:\n", "# mq:\n", "#   rabbitmq:\n", "#   kafka:\n"} {
+	for _, section := range []string{"# tracing:\n", "# metrics:\n", "# database:\n", "# redis:\n", "# auth:\n", "# mq:\n", "#   rabbitmq:\n", "#   kafka:\n"} {
 		if !strings.Contains(string(data), "\n"+section) {
 			t.Fatalf("default config is missing %q section", strings.TrimSpace(section))
 		}
@@ -54,6 +54,62 @@ func TestNewLifecycleGeneratesDefaultConfig(t *testing.T) {
 	}
 	if err := lifecycle.Close(context.Background()); err != nil {
 		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestNewLifecycleInitializesConfiguredAuthWithSharedRedis(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aurora.yaml")
+	config := `aurora:
+  addr: ":0"
+  mode: test
+redis:
+  mode: standalone
+  addrs: ["127.0.0.1:6379"]
+auth:
+  key_prefix: "service:auth:{sessions}"
+  signing_secret: "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  issuer: aurora-test
+  audience: [aurora-client]
+  access_ttl: 15m
+  refresh_ttl: 1h
+  max_session_ttl: 2h
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lifecycle, err := NewLifecycle(path)
+	if err != nil {
+		t.Fatalf("NewLifecycle() error = %v", err)
+	}
+	if lifecycle.Redis == nil || lifecycle.Auth == nil {
+		t.Fatal("configured Redis and auth were not initialized")
+	}
+	if err := lifecycle.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewLifecycleAuthRequiresSigningSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "aurora.yaml")
+	config := `aurora:
+  addr: ":0"
+  mode: test
+redis:
+  mode: standalone
+  addrs: ["127.0.0.1:6379"]
+auth:
+  issuer: aurora-test
+  audience: [aurora-client]
+  max_session_ttl: 2h
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewLifecycle(path)
+	if err == nil || !strings.Contains(err.Error(), "signing key") {
+		t.Fatalf("NewLifecycle() error = %v, want signing secret error", err)
 	}
 }
 

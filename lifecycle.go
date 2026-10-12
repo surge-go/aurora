@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/surge-go/aurora/core/auth"
 	coreconfig "github.com/surge-go/aurora/core/config"
 	"github.com/surge-go/aurora/core/database"
 	"github.com/surge-go/aurora/core/logger"
@@ -49,6 +50,7 @@ type Lifecycle struct {
 	Metrics  *metrics.Runtime
 	Database *gorm.DB
 	Redis    redis.UniversalClient
+	Auth     *auth.Manager
 
 	MQPublisher mq.Publisher
 	MQConsumer  mq.Consumer
@@ -73,6 +75,7 @@ type lifecycleConfig struct {
 	Logger   logger.Config     `mapstructure:"logger"`
 	Database *database.Config  `mapstructure:"database"`
 	Redis    *coreRedis.Config `mapstructure:"redis"`
+	Auth     *auth.Config      `mapstructure:"auth"`
 	MQ       *lifecycleMQ      `mapstructure:"mq"`
 }
 
@@ -196,6 +199,36 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		}
 	}
 
+	var authManager *auth.Manager
+	if settings.Auth != nil {
+		if redisClient == nil {
+			_ = database.Close(db)
+			if metricRuntime != nil {
+				_ = metricRuntime.Shutdown(ctx)
+			}
+			if traceRuntime != nil {
+				_ = traceRuntime.Shutdown(ctx)
+			}
+			_ = log.Sync()
+			managedConfig.Close()
+			return nil, errors.New("initialize auth: redis must be configured")
+		}
+		authManager, err = auth.New(redisClient, *settings.Auth)
+		if err != nil {
+			_ = redisClient.Close()
+			_ = database.Close(db)
+			if metricRuntime != nil {
+				_ = metricRuntime.Shutdown(ctx)
+			}
+			if traceRuntime != nil {
+				_ = traceRuntime.Shutdown(ctx)
+			}
+			_ = log.Sync()
+			managedConfig.Close()
+			return nil, fmt.Errorf("initialize auth: %w", err)
+		}
+	}
+
 	publisher, consumer, err := newLifecycleMQ(settings.MQ, redisClient)
 	if err != nil {
 		if redisClient != nil {
@@ -247,6 +280,7 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		Metrics:     metricRuntime,
 		Database:    db,
 		Redis:       redisClient,
+		Auth:        authManager,
 		MQPublisher: publisher,
 		MQConsumer:  consumer,
 	}, nil
@@ -731,6 +765,28 @@ logger:
 #   #   route_randomly: false
 #   #   failing_timeout_seconds: 15
 #   #   cluster_state_reload_interval: 0s
+
+# Optional auth configuration. Uncomment the whole block to enable JWT/Redis
+# session management. Keep the signing secret protected with the config file.
+# auth:
+#   key_prefix: aurora:auth:{auth}
+#   signing_secret: "replace-with-at-least-32-random-bytes"
+#   issuer: aurora
+#   audience: [aurora-client]
+#   access_ttl: 15m
+#   refresh_ttl: 168h
+#   max_session_ttl: 720h
+#   clock_skew: 0s
+#   revoke_batch_size: 100
+#   policy:
+#     max_sessions: 0
+#     default_platform_policy:
+#       enabled: true
+#       max_sessions: 0
+#       require_device_id: false
+#       kickout_strategy: oldest
+#       exclusive_with: []
+#     platform_policies: {}
 
 # Optional MQ configuration. Uncomment the whole block to enable one adapter.
 # mq:

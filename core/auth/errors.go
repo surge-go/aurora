@@ -1,0 +1,29 @@
+package auth
+
+import "errors"
+
+var (
+	ErrInvalidConfig       = errors.New("auth: invalid config")
+	ErrSigningKeyRequired  = errors.New("auth: signing key required")
+	ErrRedisRequired       = errors.New("auth: redis client required")
+	ErrTokenRequired       = errors.New("auth: token required")
+	ErrTokenMalformed      = errors.New("auth: malformed token")
+	ErrTokenExpired        = errors.New("auth: token expired")
+	ErrTokenUseMismatch    = errors.New("auth: token use mismatch")
+	ErrInvalidSignature    = errors.New("auth: invalid signature")
+	ErrInvalidIssuer       = errors.New("auth: invalid issuer")
+	ErrInvalidAudience     = errors.New("auth: invalid audience")
+	ErrSessionNotFound     = errors.New("auth: session not found")
+	ErrSessionExpired      = errors.New("auth: session expired")
+	ErrSessionRevoked      = errors.New("auth: session revoked")
+	ErrSessionMismatch     = errors.New("auth: session mismatch")
+	ErrRefreshTokenInvalid = errors.New("auth: invalid refresh token")
+	ErrRefreshTokenReused  = errors.New("auth: refresh token reused")
+	ErrStoreUnavailable    = errors.New("auth: store unavailable")
+	ErrRefreshValidation   = errors.New("auth: refresh validation failed")
+	ErrLoginConflict       = errors.New("auth: login conflict")
+	ErrPlatformDisabled    = errors.New("auth: platform disabled")
+	ErrDeviceRequired      = errors.New("auth: device id required")
+	ErrInvalidPrincipal    = errors.New("auth: invalid principal")
+	ErrInvalidBatchSize    = errors.New("auth: invalid revoke batch size")
+)
