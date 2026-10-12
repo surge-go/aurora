@@ -3,7 +3,7 @@
 ## 1. 设计范围
 
 Aurora 根包 `github.com/surge-go/aurora` 是基于 Gin 的 Go Web 应用框架。
-第一阶段提供 HTTP 服务、路由、请求上下文、统一响应、业务错误、泛型绑定和通用中间件。
+第一阶段提供 HTTP 服务、路由、静态文件服务 API、请求上下文、统一响应、业务错误、泛型绑定和通用中间件。
 根包同时提供可选的 `NewLifecycle` bootstrap，用于从 `config/aurora.yaml` 组合 core
 基础设施并统一管理它们的生命周期。
 
@@ -26,6 +26,7 @@ Redis 和 MQ 仍作为独立基础设施包存在，由应用组合根创建并�
 - 提供安全的统一响应和业务错误映射，避免内部错误泄露到 HTTP 响应。
 - 复用现有 Aurora logger、tracing 和 metrics 的资源所有权约定。
 - 通过 Aurora 自有路由、上下文和中间件 API 提供稳定的业务开发接口。
+- 提供 `Static`、`StaticFS` 和 `StaticFile` 静态资源路由注册入口。
 
 ### 非目标
 
@@ -49,6 +50,7 @@ router.go       # RouterGroup、路由注册和内部路由适配
 response.go     # Response 和响应写入
 errors.go       # Error、错误构造和预定义错误
 middleware.go   # 框架默认中间件装配
+middleware/     # 可选的可复用业务中间件适配器（如 Auth）
 *_test.go       # 根包测试
 ```
 
@@ -65,8 +67,9 @@ core/mq
 core/auth
 ```
 
-如果后续某个中间件需要较多内部实现，可以新增根目录下的 `internal/` 子目录，但不把
-HTTP Server 再拆成 `core/server`，除非未来出现独立复用需求并重新评审包边界。
+框架默认中间件继续放在根包；可复用的业务适配器单独放在根目录的 `middleware/` 包，
+避免根包引入认证、权限等业务依赖。HTTP Server 不拆成 `core/server`，除非未来出现独立
+复用需求并重新评审包边界。
 
 `core/auth` 使用 JWT v5 和注入的 Redis 客户端管理 access/refresh token 生命周期。它不创建或
 关闭 Redis，也不属于根包默认中间件；使用方式和 `MaxSessionTTL`、`RevokeSubject` 分页契约见
@@ -203,6 +206,10 @@ func (e *Engine) HEAD(path string, handlers ...HandlerFunc)
 func (e *Engine) OPTIONS(path string, handlers ...HandlerFunc)
 func (e *Engine) Any(path string, handlers ...HandlerFunc)
 
+func (e *Engine) Static(relativePath, root string)
+func (e *Engine) StaticFS(relativePath string, fs http.FileSystem)
+func (e *Engine) StaticFile(relativePath, filePath string)
+
 func (e *Engine) Use(handlers ...Middleware)
 func (e *Engine) Group(prefix string, handlers ...Middleware) *RouterGroup
 
@@ -261,9 +268,25 @@ func (g *RouterGroup) DELETE(path string, handlers ...HandlerFunc)
 func (g *RouterGroup) HEAD(path string, handlers ...HandlerFunc)
 func (g *RouterGroup) OPTIONS(path string, handlers ...HandlerFunc)
 func (g *RouterGroup) Any(path string, handlers ...HandlerFunc)
+func (g *RouterGroup) Static(relativePath, root string)
+func (g *RouterGroup) StaticFS(relativePath string, fs http.FileSystem)
+func (g *RouterGroup) StaticFile(relativePath, filePath string)
 ```
 
 路由分组只负责前缀和 middleware 继承，不携带认证、权限或业务依赖。
+
+### 7.1 静态文件服务 API
+
+静态文件服务 API 只负责声明资源 URL 与文件来源的映射关系：
+
+- `Static(relativePath, root)` 映射本地目录；
+- `StaticFS(relativePath, fs)` 映射 `http.FileSystem`；
+- `StaticFile(relativePath, filePath)` 映射单个文件。
+
+这三组方法同时存在于 `Engine` 和 `RouterGroup`。分组版本会继承分组前缀和中间件，
+因此可以将静态资源挂载到指定 API 或 Web 前缀下。当前实现复用底层 Gin 的静态文件
+注册能力；目录索引、缓存、隐藏文件、SPA 回退、路径穿越防护和错误页等行为以 Gin
+实现为准，Aurora 暂不额外增加一套静态资源策略。
 
 ## 8. 泛型绑定
 
@@ -737,7 +760,7 @@ func getUser(c *aurora.Context) (*User, error) {
 - 限流中间件
 - 认证授权中间件
 - OpenAPI/Swagger 支持
-- 文件上传支持
+- 静态文件服务策略和缓存控制
 - WebSocket 支持
 ## 15. 应用示例
 

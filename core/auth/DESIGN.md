@@ -85,7 +85,8 @@ github.com/golang-jwt/jwt/v5
 
 ### Principal
 
-认证主体使用字符串 ID 和可选维度，避免绑定某一种用户表或整数主键：
+认证主体使用字符串 ID 和可选维度，避免绑定某一种用户表或整数主键。上层完成账号认证后，
+将主体交给本包签发和管理 token；本包不验证账号凭证：
 
 ```go
 type Principal struct {
@@ -177,6 +178,7 @@ type Config struct {
     MaxSessionTTL   time.Duration `json:"max_session_ttl" yaml:"max_session_ttl" mapstructure:"max_session_ttl"`
     ClockSkew       time.Duration `json:"clock_skew" yaml:"clock_skew" mapstructure:"clock_skew"`
     RevokeBatchSize int           `json:"revoke_batch_size" yaml:"revoke_batch_size" mapstructure:"revoke_batch_size"`
+    IdempotencyTTL  time.Duration `json:"idempotency_ttl" yaml:"idempotency_ttl" mapstructure:"idempotency_ttl"`
     Policy          SessionPolicy `json:"policy" yaml:"policy" mapstructure:"policy"`
 }
 ```
@@ -189,6 +191,7 @@ RefreshTTL    168h
 MaxSessionTTL 无默认值，必须显式配置且至少为 1s
 ClockSkew     0
 RevokeBatchSize 100，范围为 1-100
+IdempotencyTTL  10s，用于登录幂等回放
 ```
 
 `AccessTTL`、`RefreshTTL` 和 `MaxSessionTTL` 必须至少为 `1s`，因为 JWT 的 NumericDate 和
@@ -202,6 +205,7 @@ auth:
   refresh_ttl: 168h
   max_session_ttl: 720h # 必填，至少为 1s
   revoke_batch_size: 100
+  idempotency_ttl: 10s
 ```
 
 实现应在配置解析阶段拒绝缺失、小于 `1s` 和无法解析的 `max_session_ttl`，而不是等到
@@ -252,18 +256,21 @@ JWT 本身不能表达吊销、rotation 和并发消费状态，因此 Redis 是
 <prefix>:platform_sessions:<subject_key>:<platform>
 <prefix>:device_sessions:<subject_key>:<device_id>
 <prefix>:session_refresh:<session_id>
+<prefix>:idempotency:<request_digest>
 ```
 
 `session` 使用 Redis Hash 保存 Session 字段；`session_refresh` 保存当前 refresh hash；其余索引保存
 主体、平台和设备对应的 session ID，用于登录互斥和吊销。索引使用按签发时间排序的 ZSET，
 member 为 session ID、score 为签发时间；索引 TTL 随 session TTL 延长。Redis 中不保存任何
-明文 token。session 过期时，Redis 自动删除 session 状态；Issue、Refresh 和 RevokeSubject
+明文 token。登录幂等记录只在短 TTL 内保存 AES-GCM 加密的 token pair，并绑定主体、平台、
+设备和请求参数指纹。session 过期时，Redis 自动删除 session 状态；Issue、Refresh 和 RevokeSubject
 在访问索引时应清理已经不存在的 session member。
 
 必须使用 Lua 原子完成以下操作：
 
 - Issue：读取主体索引中的 session metadata，计算平台和互斥冲突，按策略原子拒绝或吊销旧
-  session，然后写 session、当前 refresh hash 以及主体、平台和设备索引并设置 TTL。
+  session，然后写 session、当前 refresh hash 以及主体、平台和设备索引并设置 TTL；如果
+  `IdempotencyKey` 已存在，则原子回放首次 token pair 或返回幂等冲突。
 - Refresh：校验 session、主体和旧 hash，替换 refresh hash、更新 session TTL 和索引 TTL，
   并重新写入主体、平台和设备索引 member，以便在索引被清理或过期后自动修复。
 - RevokeSession：删除 session、session_refresh 和主体索引。
@@ -373,17 +380,18 @@ type IssueRequest struct {
     Platform    string
     DeviceID    string
     ForceLogin  bool
+    IdempotencyKey string
 }
 ```
 
 `Issue` 流程：
 
 1. 校验主体和认证版本。
-2. 校验平台策略、设备 ID 和登录并发限制配置。
+2. 校验可选的 `IdempotencyKey`，并计算主体、平台、设备和请求参数指纹。
 3. 生成 session ID、access JTI、refresh JTI。
 4. 计算 session、access、refresh 的过期时间，并应用 `MaxSessionTTL` 上限。
 5. 使用 HS256 签发两个不同 `token_use` 的 JWT。
-6. 调用原子 Issue Lua 脚本处理冲突、创建 session 并更新索引。
+6. 调用原子 Issue Lua 脚本；相同幂等键回放首次结果，不同参数返回 `ErrIdempotencyConflict`，否则处理冲突、创建 session 并更新索引。
 7. 返回 `TokenPair`。
 
 如果 token 签发失败，不能留下不可用 session；应先生成并签名 token，再提交 session，或
@@ -404,13 +412,14 @@ type IssueRequest struct {
 1. 解析 JWT，并确认 `token_use=refresh`。
 2. 校验签名、issuer、audience、session ID、subject 和过期时间。
 3. 读取 session，计算旧 refresh token hash。
-4. 调用可选的业务 `RefreshValidator`，检查账号仍可登录。
+4. 调用调用方提供的可选 `RefreshValidator`，由业务层检查账号是否仍可登录。
 5. 生成新 access/refresh token，并通过 Lua 原子替换旧 hash。
 6. rotation 成功后再次执行 validator；如果状态已变化，吊销 session 并返回验证错误。
 7. 旧 refresh token 再次使用返回 `ErrRefreshTokenReused`。
 
-首期不实现 refresh grace retry。需要幂等重试时，在后续版本增加显式的
-`RefreshReuseGraceTTL`，并要求 Redis 原子保存加密的轮换结果。
+refresh rotation 首期不实现 grace retry；中间件只在单进程内使用 `singleflight` 合并并发刷新。
+token 签发通过 `IssueRequest.IdempotencyKey` 支持短期幂等回放，默认 TTL 为 10 秒；幂等键只
+应在同一次 token 签发操作的网络重试中复用，新的主动签发必须生成新键。
 
 登录互斥策略只管理成功登录后的 session 数量和平台冲突，不等价于登录保护。IP 请求速率、
 密码失败计数、验证码和账号锁定属于登录入口或业务认证服务职责，可由独立 limiter 实现，
@@ -456,7 +465,7 @@ ErrRefreshValidation
 
 ## 10. HTTP/Aurora 集成边界
 
-`core/auth` 不读取 Header，也不写响应。后续可以在根包或独立 middleware 中提供：
+`core/auth` 不读取 Header，也不写响应。当前由根目录独立 `middleware` 包提供 Aurora HTTP 适配：
 
 ```go
 func AuthMiddleware(manager *auth.Manager, opts ...Option) aurora.Middleware
@@ -468,9 +477,21 @@ func AuthMiddleware(manager *auth.Manager, opts ...Option) aurora.Middleware
 - 调用 `VerifyAccess`。
 - 将 `*auth.Claims` 放入 Aurora request context。
 - 把认证错误映射为 `aurora.ErrUnauthorized` 或业务错误。
-- 可选地处理 refresh，但必须明确响应 Header、失败状态和重复刷新语义。
+- access token 过期时读取独立的 refresh token，并调用 `Refresh` 完成 rotation。
+- 可选地配置预刷新窗口；窗口内 refresh 失败不能阻断仍然有效的 access token。
+- 刷新成功后通过响应头返回新的 access/refresh token，并继续执行当前请求。
+- access token 已过期时刷新失败必须终止请求；并发 refresh 造成的旧 token 重放也必须终止该请求。
 
-业务 Handler 仍负责根据 Claims.Subject 查询用户、权限和业务状态。
+中间件可以在单进程内使用 `singleflight` 合并相同 refresh token 的并发刷新，减少同一实例
+的重复 Redis 请求；这只是性能优化，不能替代 `Manager.Refresh` 内置的 Redis Lua 原子
+rotation，因为多实例部署仍可能同时收到同一个 refresh token。
+
+建议的 HTTP 约定是使用 `X-Refresh-Token` 请求头，以及 `X-Access-Token` 和
+`X-Refresh-Token` 响应头。预刷新默认关闭，由 HTTP 层按客户端行为设置窗口；跨域部署时，
+响应头还必须加入 CORS 的 `Access-Control-Expose-Headers`。
+
+业务 Handler 仍负责根据 Claims.Subject 查询用户、权限和业务状态；登录凭证校验、登录路由和
+业务状态检查不属于本包。
 
 ## 11. 测试与验收
 
@@ -494,6 +515,8 @@ func AuthMiddleware(manager *auth.Manager, opts ...Option) aurora.Middleware
 - MaxSessions、平台级上限、平台禁用、设备 ID 必填和平台互斥。
 - KickoutOldest、KickoutAll、KickoutLatest 拒绝和 ForceLogin 覆盖。
 - 并发 Issue 不得突破主体或平台 session 上限。
+- 相同 `IdempotencyKey` 的并发 Issue 只能创建一个 session 并回放同一 token pair。
+- 相同幂等键但参数指纹不同必须返回 `ErrIdempotencyConflict`。
 - 主体类型、租户、Provider 隔离的 session 不互相吊销。
 - RevokeSubjectPage 的批量上限、分页结果和大主体不会阻塞 Redis。
 
@@ -503,6 +526,7 @@ func AuthMiddleware(manager *auth.Manager, opts ...Option) aurora.Middleware
 - Redis Lua 脚本的原子性测试。
 - Redis 不可用时 VerifyAccess 失败关闭。
 - context 取消和 timeout 能终止存储操作。
+- middleware 在 access 过期、预刷新失败、session 吊销和 refresh 重放时返回正确结果。
 - RevokeSubject 不影响其他主体。
 
 ## 12. 实施阶段
@@ -522,15 +546,15 @@ func AuthMiddleware(manager *auth.Manager, opts ...Option) aurora.Middleware
 
 ### 第三阶段
 
-1. 设计 Aurora middleware 适配器。
-2. 接入统一错误、request context 和可选自动刷新响应 Header。
+1. 已实现 Aurora middleware 适配器，支持 access 校验、过期刷新和预刷新。
+2. 已接入统一错误、request context、刷新响应 Header 和单进程 singleflight 合并。
 3. 再评估 RS256/EdDSA、kid 密钥轮换和 refresh grace retry。
 
 ## 13. 待确认决策
 
 - 首期强制注入 Redis client；纯 JWT access-only 模式不属于首期生命周期管理能力。
 - `Principal.Subject` 是否统一使用字符串，还是提供整数 ID 的辅助构造函数。
-- refresh validator 是否首期支持轮换后的第二次校验。
-- 登录冲突事件是否纳入首期 API，供应用审计被踢 session。
+- refresh validator 轮换后的第二次校验是否需要拆成独立策略。
+- 是否需要为 session 吊销提供调用方事件回调。
 - Redis key 前缀和主体 session 索引是否需要纳入 Aurora 默认配置模板。
 - 是否需要将认证事件作为独立接口加入首期 API。

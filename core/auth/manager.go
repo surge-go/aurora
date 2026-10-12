@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -142,6 +145,10 @@ func (m *Manager) Issue(ctx context.Context, request IssueRequest) (*TokenPair, 
 	if request.AuthVersion < 0 {
 		return nil, fmt.Errorf("%w: auth version cannot be negative", ErrInvalidPrincipal)
 	}
+	idempotencyKey := strings.TrimSpace(request.IdempotencyKey)
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return nil, err
+	}
 
 	policy := m.cfg.Policy.forPlatform(platform)
 	if !policy.Enabled {
@@ -176,35 +183,72 @@ func (m *Manager) Issue(ctx context.Context, request IssueRequest) (*TokenPair, 
 	if err != nil {
 		return nil, fmt.Errorf("%w: principal serialization: %v", ErrInvalidPrincipal, err)
 	}
+	var idempotencyFingerprint, idempotencyPayload string
+	if idempotencyKey != "" {
+		idempotencyFingerprint = issueFingerprint(principalJSON, request.AuthVersion, platform, deviceID, request.ForceLogin)
+		pair := &TokenPair{TokenType: "Bearer", AccessToken: accessToken, RefreshToken: refreshToken, AccessExpiresAt: accessExpires, RefreshExpiresAt: expires}
+		idempotencyPayload, err = m.encryptTokenPair(pair)
+		if err != nil {
+			return nil, fmt.Errorf("%w: idempotency payload: %v", ErrStoreUnavailable, err)
+		}
+	}
 
 	result, err := issueScript.Run(ctx, m.rdb, []string{
 		m.sessionKey(sessionID),
 		m.refreshKey(sessionID),
 		m.subjectIndexKey(principalKey),
 		m.platformIndexKey(principalKey, platform),
+		m.idempotencyKey(principalKey, platform, deviceID, idempotencyKey),
 	}, issueScriptArgs(issueScriptInput{
-		SessionID:         sessionID,
-		RefreshHash:       m.hashRefresh(refreshToken),
-		PrincipalJSON:     string(principalJSON),
-		SubjectKey:        principalKey,
-		AuthVersion:       request.AuthVersion,
-		Platform:          platform,
-		DeviceID:          deviceID,
-		IssuedAt:          now.Unix(),
-		ExpiresAt:         expires.Unix(),
-		AbsoluteExpiresAt: abs.Unix(),
-		TTL:               ttlSeconds(now, expires),
-		MaxSessions:       m.cfg.Policy.MaxSessions,
-		PlatformMax:       policy.MaxSessions,
-		Strategy:          policy.KickoutStrategy,
-		ForceLogin:        request.ForceLogin,
-		ExclusiveWith:     policy.ExclusiveWith,
-		Prefix:            m.prefix,
+		SessionID:              sessionID,
+		RefreshHash:            m.hashRefresh(refreshToken),
+		PrincipalJSON:          string(principalJSON),
+		SubjectKey:             principalKey,
+		AuthVersion:            request.AuthVersion,
+		Platform:               platform,
+		DeviceID:               deviceID,
+		IssuedAt:               now.Unix(),
+		ExpiresAt:              expires.Unix(),
+		AbsoluteExpiresAt:      abs.Unix(),
+		TTL:                    ttlSeconds(now, expires),
+		MaxSessions:            m.cfg.Policy.MaxSessions,
+		PlatformMax:            policy.MaxSessions,
+		Strategy:               policy.KickoutStrategy,
+		ForceLogin:             request.ForceLogin,
+		ExclusiveWith:          policy.ExclusiveWith,
+		Prefix:                 m.prefix,
+		IdempotencyFingerprint: idempotencyFingerprint,
+		IdempotencyPayload:     idempotencyPayload,
+		IdempotencyTTL:         ttlSeconds(now, now.Add(m.cfg.IdempotencyTTL)),
 	})).Result()
 	if err != nil {
 		return nil, storeError(err)
 	}
-	if scriptStatus(result) == "CONFLICT" {
+	status := scriptStatus(result)
+	if status == "IDEMPOTENCY_CONFLICT" {
+		return nil, ErrIdempotencyConflict
+	}
+	if status == "IDEMPOTENCY_REPLAY" {
+		items, ok := result.([]interface{})
+		if !ok || len(items) < 2 {
+			return nil, fmt.Errorf("%w: invalid idempotency replay result", ErrStoreUnavailable)
+		}
+		payload, ok := items[1].(string)
+		if !ok {
+			if raw, okBytes := items[1].([]byte); okBytes {
+				payload, ok = string(raw), true
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: invalid idempotency replay payload", ErrStoreUnavailable)
+		}
+		pair, err := m.decryptTokenPair(payload)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid idempotency replay payload", ErrStoreUnavailable)
+		}
+		return pair, nil
+	}
+	if status == "CONFLICT" {
 		return nil, ErrLoginConflict
 	}
 	if scriptStatus(result) != "OK" {
@@ -218,6 +262,80 @@ func (m *Manager) Issue(ctx context.Context, request IssueRequest) (*TokenPair, 
 		AccessExpiresAt:  accessExpires,
 		RefreshExpiresAt: expires,
 	}, nil
+}
+
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) > 256 || strings.IndexByte(key, 0) >= 0 {
+		return ErrInvalidIdempotencyKey
+	}
+	return nil
+}
+
+func issueFingerprint(principalJSON []byte, authVersion int64, platform, deviceID string, forceLogin bool) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00%s\x00%t", principalJSON, authVersion, platform, deviceID, forceLogin)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (m *Manager) idempotencyKey(principalKey, platform, deviceID, key string) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", principalKey, platform, deviceID, key)
+	return m.prefix + ":idempotency:" + fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (m *Manager) idempotencyCipher() (cipher.AEAD, error) {
+	key := sha256.Sum256(append([]byte("aurora-auth-idempotency-v1\x00"), m.secret...))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func (m *Manager) encryptTokenPair(pair *TokenPair) (string, error) {
+	aead, err := m.idempotencyCipher()
+	if err != nil {
+		return "", err
+	}
+	plaintext, err := json.Marshal(pair)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	ciphertext := aead.Seal(nonce, nonce, plaintext, nil)
+	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
+}
+
+func (m *Manager) decryptTokenPair(payload string) (*TokenPair, error) {
+	aead, err := m.idempotencyCipher()
+	if err != nil {
+		return nil, err
+	}
+	data, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < aead.NonceSize() {
+		return nil, ErrTokenMalformed
+	}
+	pairBytes, err := aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], nil)
+	if err != nil {
+		return nil, err
+	}
+	var pair TokenPair
+	if err := json.Unmarshal(pairBytes, &pair); err != nil {
+		return nil, err
+	}
+	if pair.AccessToken == "" || pair.RefreshToken == "" {
+		return nil, ErrTokenMalformed
+	}
+	return &pair, nil
 }
 
 func (m *Manager) VerifyAccessToken(raw string) (*Claims, error) {

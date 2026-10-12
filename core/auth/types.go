@@ -57,6 +57,9 @@ type IssueRequest struct {
 	Platform    string
 	DeviceID    string
 	ForceLogin  bool
+	// IdempotencyKey identifies one logical login attempt. Reusing it with the
+	// same request returns the original token pair for a short configured TTL.
+	IdempotencyKey string
 }
 
 // RevokePage reports one bounded subject-revocation operation.

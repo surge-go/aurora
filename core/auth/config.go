@@ -7,15 +7,16 @@ import (
 )
 
 const (
-	defaultAccessTTL     = 15 * time.Minute
-	defaultRefreshTTL    = 168 * time.Hour
-	defaultRevokeBatch   = 100
-	maxRevokeBatch       = 100
-	maxClockSkew         = 5 * time.Minute
-	defaultPlatformName  = "default"
-	maxPrincipalFieldLen = 256
-	maxPlatformFieldLen  = 64
-	minTokenTTL          = time.Second
+	defaultAccessTTL      = 15 * time.Minute
+	defaultRefreshTTL     = 168 * time.Hour
+	defaultRevokeBatch    = 100
+	defaultIdempotencyTTL = 10 * time.Second
+	maxRevokeBatch        = 100
+	maxClockSkew          = 5 * time.Minute
+	defaultPlatformName   = "default"
+	maxPrincipalFieldLen  = 256
+	maxPlatformFieldLen   = 64
+	minTokenTTL           = time.Second
 )
 
 // Config controls token validation, session expiry and login concurrency.
@@ -30,6 +31,7 @@ type Config struct {
 	MaxSessionTTL   time.Duration `json:"max_session_ttl" yaml:"max_session_ttl" mapstructure:"max_session_ttl"`
 	ClockSkew       time.Duration `json:"clock_skew" yaml:"clock_skew" mapstructure:"clock_skew"`
 	RevokeBatchSize int           `json:"revoke_batch_size" yaml:"revoke_batch_size" mapstructure:"revoke_batch_size"`
+	IdempotencyTTL  time.Duration `json:"idempotency_ttl" yaml:"idempotency_ttl" mapstructure:"idempotency_ttl"`
 	Policy          SessionPolicy `json:"policy" yaml:"policy" mapstructure:"policy"`
 }
 
@@ -41,6 +43,7 @@ func DefaultConfig() Config {
 		AccessTTL:       defaultAccessTTL,
 		RefreshTTL:      defaultRefreshTTL,
 		RevokeBatchSize: defaultRevokeBatch,
+		IdempotencyTTL:  defaultIdempotencyTTL,
 		Policy: SessionPolicy{
 			DefaultPlatformPolicy: PlatformPolicy{
 				Enabled:         true,
@@ -63,6 +66,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RevokeBatchSize == 0 {
 		c.RevokeBatchSize = defaultRevokeBatch
+	}
+	if c.IdempotencyTTL == 0 {
+		c.IdempotencyTTL = defaultIdempotencyTTL
 	}
 	if c.Policy.DefaultPlatformPolicy.KickoutStrategy == "" {
 		c.Policy.DefaultPlatformPolicy.KickoutStrategy = KickoutOldest
@@ -105,6 +111,9 @@ func (c Config) Validate() error {
 	}
 	if c.RevokeBatchSize <= 0 || c.RevokeBatchSize > maxRevokeBatch {
 		return fmt.Errorf("%w: revoke batch size must be between 1 and %d", ErrInvalidConfig, maxRevokeBatch)
+	}
+	if c.IdempotencyTTL < minTokenTTL {
+		return fmt.Errorf("%w: idempotency ttl must be at least %s", ErrInvalidConfig, minTokenTTL)
 	}
 	if err := validateSessionPolicy(c.Policy); err != nil {
 		return err

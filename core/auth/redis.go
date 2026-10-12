@@ -33,6 +33,20 @@ for i = 1, exclusive_count do
   exclusive[ARGV[16 + i]] = true
 end
 local prefix = ARGV[17 + exclusive_count]
+local idempotency_fingerprint = ARGV[18 + exclusive_count]
+local idempotency_payload = ARGV[19 + exclusive_count]
+local idempotency_ttl = tonumber(ARGV[20 + exclusive_count]) or 0
+
+if idempotency_fingerprint ~= "" then
+  local existing = redis.call("GET", KEYS[5])
+  if existing then
+    local separator = string.find(existing, "|", 1, true)
+    if not separator or string.sub(existing, 1, separator - 1) ~= idempotency_fingerprint then
+      return {"IDEMPOTENCY_CONFLICT"}
+    end
+    return {"IDEMPOTENCY_REPLAY", string.sub(existing, separator + 1)}
+  end
+end
 
 local sessions = {}
 local candidates = {}
@@ -172,6 +186,9 @@ redis.call("EXPIRE", KEYS[1], ttl)
 redis.call("SET", KEYS[2], refresh_hash, "EX", ttl)
 redis.call("ZADD", KEYS[3], issued_at, session_id)
 redis.call("ZADD", KEYS[4], issued_at, session_id)
+if idempotency_fingerprint ~= "" and idempotency_ttl > 0 then
+  redis.call("SET", KEYS[5], idempotency_fingerprint .. "|" .. idempotency_payload, "EX", idempotency_ttl)
+end
 if device_id ~= "" then
   redis.call("ZADD", prefix .. ":device_sessions:" .. subject_key .. ":" .. device_id, issued_at, session_id)
 end
@@ -271,6 +288,8 @@ type issueScriptInput struct {
 	ForceLogin                                        bool
 	ExclusiveWith                                     []string
 	Prefix                                            string
+	IdempotencyFingerprint, IdempotencyPayload        string
+	IdempotencyTTL                                    int64
 }
 
 func issueScriptArgs(input issueScriptInput) []interface{} {
@@ -296,6 +315,7 @@ func issueScriptArgs(input issueScriptInput) []interface{} {
 		args = append(args, platform)
 	}
 	args = append(args, input.Prefix)
+	args = append(args, input.IdempotencyFingerprint, input.IdempotencyPayload, strconv.FormatInt(input.IdempotencyTTL, 10))
 	return args
 }
 

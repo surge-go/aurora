@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-const version = "0.0.2"
+const version = "0.0.3"
 
 var ginGlobalMu sync.Mutex
 
@@ -165,6 +165,21 @@ func (e *Engine) Any(path string, handlers ...any) {
 	e.handle("OPTIONS", path, handlers...)
 	e.handle("CONNECT", path, handlers...)
 	e.handle("TRACE", path, handlers...)
+}
+
+// Static 注册一个本地目录的静态文件服务。
+func (e *Engine) Static(relativePath, root string) {
+	e.gin.Static(relativePath, root)
+}
+
+// StaticFS 注册一个基于 http.FileSystem 的静态文件服务。
+func (e *Engine) StaticFS(relativePath string, fs http.FileSystem) {
+	e.gin.StaticFS(relativePath, fs)
+}
+
+// StaticFile 注册一个单文件静态服务。
+func (e *Engine) StaticFile(relativePath, filePath string) {
+	e.gin.StaticFile(relativePath, filePath)
 }
 
 // ============================================================================

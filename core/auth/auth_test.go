@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -119,6 +120,69 @@ func TestIssueRefreshRevokeLifecycle(t *testing.T) {
 	require.NoError(t, m.RevokeSession(context.Background(), claims.SessionID))
 	_, err = m.VerifyAccess(context.Background(), refreshed.AccessToken)
 	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+func TestIssueIdempotencyReplaysTokenPair(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	m, rdb := newTestManager(t, now)
+	defer rdb.Close()
+	request := IssueRequest{Principal: Principal{Subject: "idem-user"}, Platform: "web", IdempotencyKey: "login-attempt-1"}
+	first, err := m.Issue(context.Background(), request)
+	require.NoError(t, err)
+	second, err := m.Issue(context.Background(), request)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+}
+
+func TestIssueIdempotencyConcurrentRequestsReplayOnePair(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	m, rdb := newTestManager(t, now)
+	defer rdb.Close()
+	request := IssueRequest{Principal: Principal{Subject: "idem-concurrent"}, Platform: "web", IdempotencyKey: "login-attempt-1"}
+	results := make(chan *TokenPair, 8)
+	errs := make(chan error, 8)
+	var group sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			pair, err := m.Issue(context.Background(), request)
+			results <- pair
+			errs <- err
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errs)
+	var first *TokenPair
+	for pair := range results {
+		if first == nil {
+			first = pair
+			continue
+		}
+		require.Equal(t, first, pair)
+	}
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+func TestIssueIdempotencyRejectsDifferentRequest(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	m, rdb := newTestManager(t, now)
+	defer rdb.Close()
+	_, err := m.Issue(context.Background(), IssueRequest{Principal: Principal{Subject: "idem-user"}, Platform: "web", IdempotencyKey: "login-attempt-1"})
+	require.NoError(t, err)
+	_, err = m.Issue(context.Background(), IssueRequest{Principal: Principal{Subject: "idem-user"}, Platform: "web", AuthVersion: 1, IdempotencyKey: "login-attempt-1"})
+	require.ErrorIs(t, err, ErrIdempotencyConflict)
+}
+
+func TestIssueRejectsOversizedIdempotencyKey(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	m, rdb := newTestManager(t, now)
+	defer rdb.Close()
+	_, err := m.Issue(context.Background(), IssueRequest{Principal: Principal{Subject: "idem-user"}, IdempotencyKey: strings.Repeat("x", 257)})
+	require.ErrorIs(t, err, ErrInvalidIdempotencyKey)
 }
 
 func TestRevokeSubjectPageUsesConfiguredBatch(t *testing.T) {

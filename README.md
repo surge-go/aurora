@@ -6,7 +6,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![Gin](https://img.shields.io/badge/Gin-1.12-blue?style=flat-square)](https://github.com/gin-gonic/gin)
-[![Version](https://img.shields.io/badge/version-v0.0.2-orange?style=flat-square)](https://github.com/surge-go/aurora/releases)
+[![Version](https://img.shields.io/badge/version-v0.0.3-orange?style=flat-square)](https://github.com/surge-go/aurora/releases)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![Go Report Card](https://img.shields.io/badge/Go%20Report%20Card-retired-9f9f9f?style=flat-square)](https://goreportcard.com/report/github.com/surge-go/aurora)
 [![Go Reference](https://pkg.go.dev/badge/github.com/surge-go/aurora.svg)](https://pkg.go.dev/github.com/surge-go/aurora)
@@ -26,6 +26,7 @@ Aurora 在 Gin 路由能力之上,提供稳定的业务开发 API、统一的响
 - 📦 **依赖注入** —— `Config` 描述静态配置,`Option` 注入运行时依赖,无全局魔法
 - 🔭 **可观测性** —— 内置 RequestID / Tracing / Metrics / AccessLog,响应自动带 `trace_id`
 - 🧩 **生命周期清晰** —— `Start` / `Serve` / `Run` / `Shutdown` 统一封装,防启动竞态
+- 📁 **静态文件 API** —— 提供 `Static` / `StaticFS` / `StaticFile` 路由注册入口
 - 🚫 **资源所有权明确** —— Engine 只管 Gin/HTTP Server,DB / Redis / MQ 由应用组合根管理
 
 ## 📑 目录
@@ -38,6 +39,7 @@ Aurora 在 Gin 路由能力之上,提供稳定的业务开发 API、统一的响
   - [Handler 与泛型绑定](#handler-与泛型绑定)
   - [Context 请求上下文](#context-请求上下文)
   - [路由与分组](#路由与分组)
+  - [静态文件服务](#静态文件服务)
 - [统一响应与错误处理](#-统一响应与错误处理)
 - [中间件](#-中间件)
 - [配置](#-配置)
@@ -202,7 +204,7 @@ aurora:
 # Uncomment an optional tracing block to enable it.
 # tracing:
 #   service_name: aurora
-#   service_version: "0.0.2"
+#   service_version: "0.0.3"
 #   endpoint: "localhost:4317"
 #   protocol: grpc
 #   insecure: true
@@ -210,7 +212,7 @@ aurora:
 # Uncomment an optional metrics block to enable it.
 # metrics:
 #   service_name: aurora
-#   service_version: "0.0.2"
+#   service_version: "0.0.3"
 #   endpoint: "localhost:4317"
 #   protocol: grpc
 #   insecure: true
@@ -366,6 +368,24 @@ admin.DELETE("/users/:id", DeleteUser)
 
 `RouterGroup` 只负责**前缀和中间件继承**,不携带认证、权限或业务依赖 —— 这些请通过闭包注入 Handler。
 
+### 静态文件服务
+
+Engine 和 RouterGroup 都提供静态文件服务的路由注册入口：
+
+```go
+engine.Static("/assets", "./public")
+engine.StaticFS("/static", http.Dir("./static"))
+engine.StaticFile("/favicon.ico", "./public/favicon.ico")
+
+assets := engine.Group("/web")
+assets.Static("/assets", "./web/assets")
+```
+
+`Static` 映射本地目录，`StaticFS` 接收 `http.FileSystem`，`StaticFile` 映射单个文件。
+静态资源路由会参与 Aurora 的路由注册和中间件链；目录索引、缓存策略、隐藏文件和 SPA
+回退等具体行为遵循底层 Gin 的文件服务实现。业务 Handler 返回单个文件时继续使用
+`Context.File` 或 `Context.FileAttachment`。
+
 ## 📨 统一响应与错误处理
 
 ### 响应结构
@@ -457,6 +477,32 @@ func Auth(c *aurora.Context) {
 engine.Use(Auth)              // 全局
 api := engine.Group("/api", Auth)  // 仅分组
 ```
+
+可复用的业务中间件放在独立的 `middleware` 包。例如，`middleware.AuthMiddleware` 会
+校验 `Authorization: Bearer <access-token>`，把 `*auth.Claims` 写入请求上下文，并将
+认证失败映射为 401；Redis 不可用时返回 503：
+
+```go
+import auroramiddleware "github.com/surge-go/aurora/middleware"
+
+api := engine.Group("/api", auroramiddleware.AuthMiddleware(lifecycle.Auth))
+api.GET("/me", func(c *aurora.Context) {
+    claims, _ := auroramiddleware.Claims(c)
+    c.OK(claims.Subject)
+})
+```
+
+认证中间件默认只在 access token 过期时使用 `X-Refresh-Token` 刷新。可以通过
+`WithPreRefreshWindow(2*time.Minute)` 开启预刷新：access token 进入窗口后会尝试轮换，
+刷新成功会在响应中写入 `X-Access-Token` 和 `X-Refresh-Token`，并继续执行当前请求。
+预刷新失败不会阻断仍然有效的 access token；access token 已过期时刷新失败仍返回 401。
+同一进程内并发刷新同一个 refresh token 会通过 `singleflight` 合并为一次 Redis 刷新，
+跨进程的最终一致性仍由 `core/auth` 的 Redis Lua rotation 保证。
+测试或受控运行时可以通过 `WithClock` 注入中间件时钟；生产环境默认使用系统时钟。
+
+登录入口可以在 `auth.IssueRequest` 中传入 `IdempotencyKey`，用来处理重复点击或网络重试。
+相同主体、平台、设备和幂等键会在短 TTL 内回放第一次 token pair；请求参数不同会返回
+`ErrIdempotencyConflict`。客户端应为每次新的主动登录生成新的幂等键。
 
 ## ⚙️ 配置
 
@@ -574,6 +620,11 @@ func (e *Engine) HEAD(path string, handlers ...any)
 func (e *Engine) OPTIONS(path string, handlers ...any)
 func (e *Engine) Any(path string, handlers ...any)
 
+// 静态文件服务
+func (e *Engine) Static(relativePath, root string)
+func (e *Engine) StaticFS(relativePath string, fs http.FileSystem)
+func (e *Engine) StaticFile(relativePath, filePath string)
+
 // 中间件与分组
 func (e *Engine) Use(handlers ...any)
 func (e *Engine) Group(prefix string, handlers ...any) *RouterGroup
@@ -617,6 +668,11 @@ func (g *RouterGroup) DELETE(path string, handlers ...any)
 func (g *RouterGroup) HEAD(path string, handlers ...any)
 func (g *RouterGroup) OPTIONS(path string, handlers ...any)
 func (g *RouterGroup) Any(path string, handlers ...any)
+
+// 静态文件服务
+func (g *RouterGroup) Static(relativePath, root string)
+func (g *RouterGroup) StaticFS(relativePath string, fs http.FileSystem)
+func (g *RouterGroup) StaticFile(relativePath, filePath string)
 ```
 
 ### Handler 与绑定适配器
@@ -883,7 +939,7 @@ type TracingRuntime interface {
 
 ## 📌 版本与兼容性
 
-当前版本:**`v0.0.2`**(第一阶段,API 仍在演进)
+当前版本:**`v0.0.3`**(第一阶段,API 仍在演进)
 
 | 版本 | 状态 | 说明 |
 | --- | --- | --- |

@@ -1,6 +1,7 @@
 package aurora
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -128,6 +129,21 @@ func (g *RouterGroup) Any(path string, handlers ...any) {
 	g.handle("OPTIONS", path, handlers...)
 	g.handle("CONNECT", path, handlers...)
 	g.handle("TRACE", path, handlers...)
+}
+
+// Static 注册一个本地目录的静态文件服务。
+func (g *RouterGroup) Static(relativePath, root string) {
+	g.group.Static(relativePath, root)
+}
+
+// StaticFS 注册一个基于 http.FileSystem 的静态文件服务。
+func (g *RouterGroup) StaticFS(relativePath string, fs http.FileSystem) {
+	g.group.StaticFS(relativePath, fs)
+}
+
+// StaticFile 注册一个单文件静态服务。
+func (g *RouterGroup) StaticFile(relativePath, filePath string) {
+	g.group.StaticFile(relativePath, filePath)
 }
 
 // ============================================================================
