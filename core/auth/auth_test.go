@@ -35,6 +35,7 @@ func TestNewRejectsSubsecondTTL(t *testing.T) {
 		{name: "access", set: func(cfg *Config) { cfg.AccessTTL = 500 * time.Millisecond }},
 		{name: "refresh", set: func(cfg *Config) { cfg.RefreshTTL = 500 * time.Millisecond }},
 		{name: "session", set: func(cfg *Config) { cfg.MaxSessionTTL = 500 * time.Millisecond }},
+		{name: "compensation", set: func(cfg *Config) { cfg.RefreshCompensationTimeout = 500 * time.Millisecond }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +48,19 @@ func TestNewRejectsSubsecondTTL(t *testing.T) {
 			require.ErrorIs(t, err, ErrInvalidConfig)
 		})
 	}
+}
+
+func TestNewRejectsExcessiveRefreshCompensationTimeout(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	cfg := DefaultConfig()
+	cfg.Issuer = "aurora-test"
+	cfg.Audience = []string{"aurora-client"}
+	cfg.MaxSessionTTL = 2 * time.Hour
+	cfg.RefreshCompensationTimeout = time.Minute + time.Nanosecond
+	_, err := New(rdb, cfg, WithSigningSecret(bytes.Repeat([]byte("k"), 32)))
+	require.ErrorIs(t, err, ErrInvalidConfig)
 }
 
 func TestKeyPrefixCanBeConfigured(t *testing.T) {

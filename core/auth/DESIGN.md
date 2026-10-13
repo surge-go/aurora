@@ -177,6 +177,7 @@ type Config struct {
     RefreshTTL      time.Duration `json:"refresh_ttl" yaml:"refresh_ttl" mapstructure:"refresh_ttl"`
     MaxSessionTTL   time.Duration `json:"max_session_ttl" yaml:"max_session_ttl" mapstructure:"max_session_ttl"`
     ClockSkew       time.Duration `json:"clock_skew" yaml:"clock_skew" mapstructure:"clock_skew"`
+    RefreshCompensationTimeout time.Duration `json:"refresh_compensation_timeout" yaml:"refresh_compensation_timeout" mapstructure:"refresh_compensation_timeout"`
     RevokeBatchSize int           `json:"revoke_batch_size" yaml:"revoke_batch_size" mapstructure:"revoke_batch_size"`
     IdempotencyTTL  time.Duration `json:"idempotency_ttl" yaml:"idempotency_ttl" mapstructure:"idempotency_ttl"`
     Policy          SessionPolicy `json:"policy" yaml:"policy" mapstructure:"policy"`
@@ -192,6 +193,7 @@ MaxSessionTTL 无默认值，必须显式配置且至少为 1s
 ClockSkew     0
 RevokeBatchSize 100，范围为 1-100
 IdempotencyTTL  10s，用于登录幂等回放
+RefreshCompensationTimeout 5s，用于限制 refresh validator 失败后的补偿吊销，最大 1m
 ```
 
 `AccessTTL`、`RefreshTTL` 和 `MaxSessionTTL` 必须至少为 `1s`，因为 JWT 的 NumericDate 和

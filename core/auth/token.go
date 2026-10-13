@@ -13,6 +13,9 @@ const (
 	TokenUseRefresh = "refresh"
 )
 
+// signToken 使用 HS256 为指定 Principal 签发 JWT。
+// claims 同时包含会话标识（SessionID）、用途（TokenUse）、平台与版本信息，
+// 后续在 Verify / Refresh 中会与 Redis 中的会话状态比对。
 func (m *Manager) signToken(principal Principal, sessionID, platform string, authVersion int64, jti, tokenUse string, issuedAt, expiresAt time.Time) (string, error) {
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -35,6 +38,9 @@ func (m *Manager) signToken(principal Principal, sessionID, platform string, aut
 	return token.SignedString(m.secret)
 }
 
+// parseToken 解析并校验 JWT，强制限定签名算法、issuer、audience、过期与签发时间。
+// 除加密校验外还会做语义检查：subject/sessionID/JTI 必须存在，expires 必须晚于 iat，
+// token_use 必须与调用方期望一致。
 func (m *Manager) parseToken(raw, expectedUse string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
@@ -72,6 +78,8 @@ func (m *Manager) parseToken(raw, expectedUse string) (*Claims, error) {
 	return claims, nil
 }
 
+// mapJWTError 将 jwt 库的底层错误映射为本包的稳定错误，
+// 让调用方可以通过 errors.Is 进行跨层判断。
 func mapJWTError(err error) error {
 	switch {
 	case errors.Is(err, ErrInvalidSignature), errors.Is(err, jwt.ErrTokenSignatureInvalid):

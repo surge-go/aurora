@@ -44,8 +44,8 @@ func WithClaimsKey(key string) Option {
 	}
 }
 
-// WithClock supplies the clock used to decide whether proactive refresh is
-// needed. It is primarily useful for deterministic tests and controlled runtimes.
+// WithClock 注入用于判断是否触发主动刷新的时钟。
+// 主要用于可重复的单元测试和受控运行时。
 func WithClock(now func() time.Time) Option {
 	return func(opts *options) {
 		if now != nil {
@@ -54,8 +54,8 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
-// WithPreRefreshWindow enables proactive refresh while the access token has
-// less than window remaining. Zero disables proactive refresh.
+// WithPreRefreshWindow 启用主动刷新：当 access token 剩余有效期小于 window 时
+// 自动触发刷新。传入 0 表示关闭主动刷新。
 func WithPreRefreshWindow(window time.Duration) Option {
 	return func(opts *options) {
 		if window < 0 {
@@ -65,7 +65,7 @@ func WithPreRefreshWindow(window time.Duration) Option {
 	}
 }
 
-// WithRefreshTokenHeader changes the request header containing the refresh token.
+// WithRefreshTokenHeader 修改请求中携带 refresh token 的 header 名。
 func WithRefreshTokenHeader(header string) Option {
 	return func(opts *options) {
 		if header = strings.TrimSpace(header); header != "" {
@@ -74,7 +74,7 @@ func WithRefreshTokenHeader(header string) Option {
 	}
 }
 
-// WithTokenResponseHeaders changes the response headers used for rotated tokens.
+// WithTokenResponseHeaders 修改用于返回轮换后 token 的响应 header 名。
 func WithTokenResponseHeaders(accessHeader, refreshHeader string) Option {
 	return func(opts *options) {
 		if accessHeader = strings.TrimSpace(accessHeader); accessHeader != "" {
@@ -118,9 +118,9 @@ func AuthMiddleware(manager *coreauth.Manager, opts ...Option) aurora.Middleware
 
 		claims, err := manager.VerifyAccess(c.Context(), raw)
 		if err == nil {
-			// Proactive refresh is best effort: the current access token is still
-			// valid, so a missing, reused, or unavailable refresh token must not
-			// turn this request into an authentication failure.
+			// 主动刷新是尽力而为的：当前 access token 仍然有效，
+			// refresh token 缺失、被复用或暂时不可用都不应让
+			// 本次请求变成认证失败。
 			if config.preRefreshWindow > 0 && claims.ExpiresAt != nil &&
 				!claims.ExpiresAt.Time.After(config.now().Add(config.preRefreshWindow)) {
 				if refreshRaw := strings.TrimSpace(c.GetHeader(config.refreshTokenHeader)); refreshRaw != "" {
@@ -163,9 +163,9 @@ func AuthMiddleware(manager *coreauth.Manager, opts ...Option) aurora.Middleware
 	}
 }
 
-// refreshWithSingleflight merges concurrent refreshes for the same token in
-// one process. The refresh token itself is never used as the in-memory key.
-// Redis Lua rotation remains the authority across processes and instances.
+// refreshWithSingleflight 在单进程内合并对同一 token 的并发刷新请求。
+// refresh token 本身不会作为内存键（使用 SHA-256 摘要代替）；
+// 跨进程、跨实例的并发安全性由 Redis Lua 轮换脚本保证。
 func refreshWithSingleflight(group *singleflight.Group, ctx context.Context, manager *coreauth.Manager, raw string) (*coreauth.TokenPair, error) {
 	digest := sha256.Sum256([]byte(raw))
 	key := hex.EncodeToString(digest[:])

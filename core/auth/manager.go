@@ -20,7 +20,7 @@ import (
 
 const defaultKeyPrefix = "aurora:auth:{auth}"
 
-// Option configures a Manager at construction time.
+// Option 在构造 Manager 时配置选项。
 type Option func(*managerOptions) error
 
 type managerOptions struct {
@@ -29,7 +29,7 @@ type managerOptions struct {
 	now    func() time.Time
 }
 
-// WithSigningSecret supplies the HMAC key used for both token signing and refresh hashing.
+// WithSigningSecret 提供用于 token 签名与 refresh hash 的 HMAC 密钥。
 func WithSigningSecret(secret []byte) Option {
 	return func(options *managerOptions) error {
 		if len(secret) == 0 {
@@ -40,7 +40,7 @@ func WithSigningSecret(secret []byte) Option {
 	}
 }
 
-// WithKeyPrefix sets the Redis key prefix. It must contain one non-empty hash tag.
+// WithKeyPrefix 设置 Redis key 前缀。前缀必须包含一个非空的 hash tag。
 func WithKeyPrefix(prefix string) Option {
 	return func(options *managerOptions) error {
 		options.prefix = strings.TrimSpace(prefix)
@@ -48,7 +48,7 @@ func WithKeyPrefix(prefix string) Option {
 	}
 }
 
-// WithClock is intended for deterministic tests and controlled runtimes.
+// WithClock 注入时钟，主要用于可重复的单元测试和受控运行时。
 func WithClock(now func() time.Time) Option {
 	return func(options *managerOptions) error {
 		if now == nil {
@@ -67,8 +67,8 @@ type Manager struct {
 	now    func() time.Time
 }
 
-// New creates an auth manager using an application-owned Redis client.
-// The manager never closes the injected client.
+// New 使用应用持有的 Redis 客户端创建 auth Manager。
+// Manager 不会关闭注入的客户端。
 func New(rdb redis.UniversalClient, cfg Config, opts ...Option) (*Manager, error) {
 	if isNilUniversalClient(rdb) {
 		return nil, ErrRedisRequired
@@ -127,6 +127,10 @@ func isNilUniversalClient(client redis.UniversalClient) bool {
 	}
 }
 
+// Issue 为指定 Principal 签发一对新的 access / refresh token。
+// 流程：参数校验 → 平台策略检查 → 生成 sessionID 和 token → 通过 Lua 脚本
+// 在 Redis 中原子完成会话登记、并发上限踢出以及幂等键写入。
+// 幂等键相同时在 TTL 内直接返回缓存的 token pair（AES-GCM 加密存储）。
 func (m *Manager) Issue(ctx context.Context, request IssueRequest) (*TokenPair, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -274,18 +278,21 @@ func validateIdempotencyKey(key string) error {
 	return nil
 }
 
+// issueFingerprint 计算幂等请求指纹，用于识别"同 Principal、同参数"的重复登录。
 func issueFingerprint(principalJSON []byte, authVersion int64, platform, deviceID string, forceLogin bool) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00%s\x00%t", principalJSON, authVersion, platform, deviceID, forceLogin)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// idempotencyKey 生成幂等键对应的 Redis key，使用 SHA-256 摘要避免泄露原始参数。
 func (m *Manager) idempotencyKey(principalKey, platform, deviceID, key string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", principalKey, platform, deviceID, key)
 	return m.prefix + ":idempotency:" + fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// idempotencyCipher 派生 AES-GCM 密钥，用于加密缓存的 token pair，防止 Redis 数据泄露导致 token 直接泄露。
 func (m *Manager) idempotencyCipher() (cipher.AEAD, error) {
 	key := sha256.Sum256(append([]byte("aurora-auth-idempotency-v1\x00"), m.secret...))
 	block, err := aes.NewCipher(key[:])
@@ -338,6 +345,8 @@ func (m *Manager) decryptTokenPair(payload string) (*TokenPair, error) {
 	return &pair, nil
 }
 
+// VerifyAccessToken 仅校验 access token 的签名、issuer、audience 和过期时间，
+// 不查询 Redis。适合性能敏感、允许一定过期窗口的场景。
 func (m *Manager) VerifyAccessToken(raw string) (*Claims, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, ErrTokenRequired
@@ -345,6 +354,8 @@ func (m *Manager) VerifyAccessToken(raw string) (*Claims, error) {
 	return m.parseToken(raw, TokenUseAccess)
 }
 
+// VerifyAccess 在 VerifyAccessToken 的基础上，进一步加载 Redis 中的会话
+// 并检查撤销、过期、AuthVersion 与平台一致性。是默认推荐的安全校验入口。
 func (m *Manager) VerifyAccess(ctx context.Context, raw string) (*Claims, error) {
 	claims, err := m.VerifyAccessToken(raw)
 	if err != nil {
@@ -370,6 +381,12 @@ func (m *Manager) VerifyAccess(ctx context.Context, raw string) (*Claims, error)
 	return claims, nil
 }
 
+// Refresh 使用 refresh token 轮换出新的 token pair。
+// 关键安全机制：
+//  1. Lua 脚本原子比较旧 hash 并写入新 hash，防止同一 token 被并发重复使用；
+//  2. 轮换前调用 validator 校验业务登录态；
+//  3. 轮换后再次调用 validator，失败时通过 RevokeSession 撤销刚创建的会话
+//     （使用 WithoutCancel + 超时，避免请求取消导致脏会话残留）。
 func (m *Manager) Refresh(ctx context.Context, raw string, validator RefreshValidator) (*TokenPair, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, ErrTokenRequired
@@ -440,9 +457,12 @@ func (m *Manager) Refresh(ctx context.Context, raw string, validator RefreshVali
 	}
 	if validator != nil {
 		if err := validator(ctx, session.Principal); err != nil {
-			// Rotation has already committed. Keep the compensating revoke alive
-			// even when the request context was cancelled by the validator.
-			if revokeErr := m.RevokeSession(context.WithoutCancel(ctx), session.ID); revokeErr != nil {
+			// 轮换已经提交，无法回滚。使用 WithoutCancel + 独立超时做补偿撤销，
+			// 避免请求被客户端取消后脏会话继续存活；超时上限防止 Redis 故障
+			// 把请求挂死。
+			compensationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.RefreshCompensationTimeout)
+			defer cancel()
+			if revokeErr := m.RevokeSession(compensationCtx, session.ID); revokeErr != nil {
 				return nil, fmt.Errorf("%w: %w; revoke session: %w", ErrRefreshValidation, err, revokeErr)
 			}
 			return nil, fmt.Errorf("%w: %w", ErrRefreshValidation, err)
@@ -457,6 +477,7 @@ func (m *Manager) Refresh(ctx context.Context, raw string, validator RefreshVali
 	}, nil
 }
 
+// RevokeSession 撤销单个会话，同时清理其在 subject / platform / device 索引中的成员。
 func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return ErrSessionNotFound
@@ -482,6 +503,8 @@ func (m *Manager) RevokeSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// RevokeSubject 撤销指定主体的所有会话。内部按 RevokeBatchSize 分页，
+// 直到主体索引被清空，避免单次操作阻塞 Redis。
 func (m *Manager) RevokeSubject(ctx context.Context, principal Principal) error {
 	for {
 		page, err := m.RevokeSubjectPage(ctx, principal, m.cfg.RevokeBatchSize)
@@ -494,6 +517,8 @@ func (m *Manager) RevokeSubject(ctx context.Context, principal Principal) error 
 	}
 }
 
+// RevokeSubjectPage 撤销指定主体最多 limit 个会话，返回是否还有剩余。
+// 由 RevokeSubject 循环调用，也可单独使用实现"撤销 N 个最老会话"的策略。
 func (m *Manager) RevokeSubjectPage(ctx context.Context, principal Principal, limit int) (RevokePage, error) {
 	principal, err := normalizePrincipal(principal)
 	if err != nil {
@@ -518,6 +543,7 @@ func (m *Manager) RevokeSubjectPage(ctx context.Context, principal Principal, li
 	return RevokePage{Revoked: int(values[0]), HasMore: values[1] != 0}, nil
 }
 
+// normalizePrincipal 修剪字段并做基本合法性校验（非空 subject、长度与 NUL 字符检查）。
 func normalizePrincipal(principal Principal) (Principal, error) {
 	principal.Subject = strings.TrimSpace(principal.Subject)
 	principal.Type = strings.TrimSpace(principal.Type)
@@ -536,6 +562,7 @@ func normalizePrincipal(principal Principal) (Principal, error) {
 	return principal, nil
 }
 
+// normalizePlatform 空平台归一化为 "default"，保证索引 key 稳定。
 func normalizePlatform(platform string) string {
 	platform = strings.TrimSpace(platform)
 	if platform == "" {
@@ -544,6 +571,7 @@ func normalizePlatform(platform string) string {
 	return platform
 }
 
+// validateOptionalKeySegment 与 validateKeySegment 的区别是允许空值（空值会被上层跳过）。
 func validateOptionalKeySegment(value string, max int, name string) error {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -551,6 +579,8 @@ func validateOptionalKeySegment(value string, max int, name string) error {
 	return validateKeySegment(value, max, name)
 }
 
+// validateKeySegment 校验用于 Redis key 的字段：非空、长度受限、只允许
+// 字母、数字、'-'、'_'、'.'，避免 key 注入与解析歧义。
 func validateKeySegment(value string, max int, name string) error {
 	if value == "" || len(value) > max {
 		return fmt.Errorf("%w: %s is empty or too long", ErrInvalidConfig, name)
@@ -564,6 +594,10 @@ func validateKeySegment(value string, max int, name string) error {
 	return nil
 }
 
+// validateKeyPrefix 校验 Redis key 前缀：
+//   - 不能包含空白字符（防止 RESP 协议注入）；
+//   - 必须包含且只包含一对完整的 {} hash tag，保证 cluster 模式下相关 key
+//     落到同一 slot，Lua 脚本才能原子访问。
 func validateKeyPrefix(prefix string) error {
 	if prefix == "" || strings.ContainsAny(prefix, " \t\r\n") {
 		return fmt.Errorf("%w: invalid key prefix", ErrInvalidConfig)
@@ -579,11 +613,15 @@ func validateKeyPrefix(prefix string) error {
 	return nil
 }
 
+// makePrincipalKey 将 Principal 编码为稳定的索引 key 段，
+// 使用 \x00 分隔避免字段拼接歧义，再做 base64 URL 安全编码。
 func makePrincipalKey(principal Principal) string {
 	value := principal.Type + "\x00" + principal.TenantID + "\x00" + principal.Subject + "\x00" + principal.Provider
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
+// principalMatchesClaims 校验 Redis 会话中的 Principal 与 JWT claims 是否一致。
+// 任何一个字段漂移都说明 token 与会话已脱钩，应视为会话不匹配。
 func principalMatchesClaims(principal Principal, claims *Claims) bool {
 	return principal.Subject == claims.Subject && principal.Type == claims.PrincipalType && principal.TenantID == claims.TenantID && principal.Provider == claims.Provider
 }
@@ -603,10 +641,13 @@ func ttlSeconds(now, expires time.Time) int64 {
 	return ttl
 }
 
+// currentTime 返回 UTC 秒级时间，保证存储到 Redis 与签入 JWT 的时间精度一致。
 func (m *Manager) currentTime() time.Time {
 	return m.now().UTC().Truncate(time.Second)
 }
 
+// hashRefresh 使用 HMAC-SHA256 计算 refresh token 的存储散列，
+// 让 Redis 中只保存散列而非原始 token，降低数据泄露风险。
 func (m *Manager) hashRefresh(token string) string {
 	h := hmac.New(sha256.New, m.secret)
 	_, _ = h.Write([]byte(token))

@@ -251,6 +251,7 @@ logger:
 #   access_ttl: 15m
 #   refresh_ttl: 168h
 #   max_session_ttl: 720h
+#   refresh_compensation_timeout: 5s
 
 # Uncomment an optional MQ block to enable it.
 # mq:
@@ -263,6 +264,9 @@ logger:
 
 启用 Auth 时，在配置中填写至少 32 字节的 `signing_secret`。`NewLifecycle` 会复用统一创建的 Redis 客户端，并通过 `lifecycle.Auth`
 提供 `*auth.Manager`；Auth 不单独拥有或关闭 Redis，`Lifecycle.Close` 会统一释放资源。
+
+`refresh_compensation_timeout` 用于限制 refresh 轮换已提交、但后置状态校验失败时的补偿吊销操作，默认 `5s`，允许范围为 `1s-1m`。
+补偿吊销使用独立的有界 context，Redis 暂时不可用时不会让请求无限等待。
 
 未写入配置段的组件不会初始化；启用 tracing 或 metrics 后必须替换为实际 collector 地址。
 Redis Streams 依赖同一份 `redis` 客户端，启用 MQ Redis adapter 时也必须同时配置 Redis。

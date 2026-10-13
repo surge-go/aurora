@@ -1,5 +1,5 @@
-// Package auth manages JWT access and refresh token lifecycles backed by Redis.
+// Package auth 基于 Redis 管理 JWT access 与 refresh token 的生命周期。
 //
-// The package does not create or close the Redis client. Applications own that
-// lifecycle and inject a redis.UniversalClient into New.
+// 本包不创建也不关闭 Redis 客户端。应用负责其生命周期，
+// 并通过 New 注入 redis.UniversalClient。
 package auth

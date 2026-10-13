@@ -11,6 +11,18 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
+// issueScript 原子化完成"签发新会话"的全部 Redis 写入：
+//
+//  1. 幂等检查：命中幂等键且指纹一致时直接返回缓存的加密 token pair；
+//     指纹不一致返回 IDEMPOTENCY_CONFLICT。
+//  2. 扫描主体索引 ZSET，清理已不存在的会话成员，统计：
+//     当前活跃数、当前平台数、被标记为互斥的平台数。
+//  3. 根据全局/平台/互斥三类上限计算需要踢出的会话数量。
+//  4. strategy=latest 且未指定 force_login 时直接返回 CONFLICT。
+//  5. 否则按策略选出待踢出的会话，删除会话 hash、refresh 键和索引成员。
+//  6. 写入新会话 hash、refresh hash、各索引 ZSET，并设置幂等键。
+//
+// 由于整段脚本在 Redis 单线程中原子执行，并发登录不会突破任何一类上限。
 var issueScript = redis.NewScript(`
 local session_id = ARGV[1]
 local refresh_hash = ARGV[2]
@@ -200,6 +212,15 @@ end
 return {"OK"}
 `)
 
+// refreshScript 原子化完成 refresh token 轮换：
+//
+//  1. 会话不存在 → NOT_FOUND；
+//  2. 当前 refresh hash 与期望不一致 → REUSED（防止同一 token 重放）；
+//  3. 会话已过期 → EXPIRED；
+//  4. 否则写入新的 refresh hash、过期时间，并刷新主体/平台/设备索引。
+//
+// 整个过程是单脚本原子操作，即使并发使用同一 refresh token 也只有
+// 一个调用方会成功，其余全部命中 REUSED。
 var refreshScript = redis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) == 0 then
   return {"NOT_FOUND"}
@@ -231,6 +252,8 @@ end
 return {"OK"}
 `)
 
+// revokeSessionScript 原子化删除单个会话及其在 subject / platform / device
+// 索引中的成员，空索引会被一并清理，避免空 ZSET 长期占用内存。
 var revokeSessionScript = redis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) == 0 then
   return 0
@@ -247,6 +270,11 @@ if ARGV[4] ~= "" and redis.call("ZCARD", KEYS[5]) == 0 then redis.call("DEL", KE
 return 1
 `)
 
+// revokeSubjectPageScript 按分页方式撤销主体下的会话：
+//
+// 每次最多处理 limit 条会话，逐条删除会话 hash、refresh 键和 platform /
+// device 索引，最后返回 [已撤销数, 是否还有剩余]。
+// 分页设计避免主体拥有大量会话时单次 Lua 脚本阻塞 Redis。
 var revokeSubjectPageScript = redis.NewScript(`
 local prefix = ARGV[1]
 local subject_key = ARGV[2]
@@ -278,6 +306,7 @@ redis.call("DEL", KEYS[1])
 return {revoked, 0}
 `)
 
+// issueScriptInput 是 issueScript 的入参集合。字段顺序必须与 Lua 中 ARGV 顺序一一对应。
 type issueScriptInput struct {
 	SessionID, RefreshHash, PrincipalJSON, SubjectKey string
 	AuthVersion                                       int64
@@ -292,6 +321,8 @@ type issueScriptInput struct {
 	IdempotencyTTL                                    int64
 }
 
+// issueScriptArgs 将 issueScriptInput 序列化为 Lua 脚本期望的 ARGV 列表，
+// ExclusiveWith 为变长字段，紧跟在固定字段之后，因此 prefix 与幂等参数的位置需动态计算。
 func issueScriptArgs(input issueScriptInput) []interface{} {
 	args := []interface{}{
 		input.SessionID,
@@ -319,6 +350,7 @@ func issueScriptArgs(input issueScriptInput) []interface{} {
 	return args
 }
 
+// refreshScriptInput 是 refreshScript 的入参集合。
 type refreshScriptInput struct {
 	ExpectedHash, NewHash                  string
 	Now, ExpiresAt, LastRefreshed, TTL     int64
@@ -326,6 +358,7 @@ type refreshScriptInput struct {
 	SessionID                              string
 }
 
+// refreshScriptArgs 将 refreshScriptInput 序列化为 Lua 脚本期望的 ARGV 列表。
 func refreshScriptArgs(input refreshScriptInput) []interface{} {
 	return []interface{}{
 		input.ExpectedHash,
@@ -342,6 +375,7 @@ func refreshScriptArgs(input refreshScriptInput) []interface{} {
 	}
 }
 
+// boolString 将 bool 编码为 Lua 端可比较的 "1"/"0"，与 ARGV 中的字符串语义保持一致。
 func boolString(value bool) string {
 	if value {
 		return "1"
@@ -349,6 +383,8 @@ func boolString(value bool) string {
 	return "0"
 }
 
+// loadSession 加载会话完整状态（元数据 + 当前 refresh hash）。
+// refresh hash 单独存放在 :session_refresh:{id} key，便于轮换时原子更新。
 func (m *Manager) loadSession(ctx context.Context, sessionID string) (Session, error) {
 	session, err := m.loadSessionMetadata(ctx, sessionID)
 	if err != nil {
@@ -365,6 +401,8 @@ func (m *Manager) loadSession(ctx context.Context, sessionID string) (Session, e
 	return session, nil
 }
 
+// loadSessionMetadata 仅加载会话元数据（不取 refresh hash），用于 Revoke 等
+// 不需要比对 hash 的场景，减少一次往返。
 func (m *Manager) loadSessionMetadata(ctx context.Context, sessionID string) (Session, error) {
 	values, err := m.rdb.HGetAll(ctx, m.sessionKey(sessionID)).Result()
 	if err != nil {
@@ -410,6 +448,7 @@ func (m *Manager) loadSessionMetadata(ctx context.Context, sessionID string) (Se
 	}, nil
 }
 
+// parseSessionTime 解析 Redis 中存储的 Unix 秒时间戳；非正数视为会话数据损坏。
 func parseSessionTime(value string) (time.Time, error) {
 	seconds, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || seconds <= 0 {
@@ -418,6 +457,8 @@ func parseSessionTime(value string) (time.Time, error) {
 	return time.Unix(seconds, 0).UTC(), nil
 }
 
+// scriptStatus 从 Lua 脚本的多种返回形式（string / []byte / []interface{} / int64 / int）
+// 提取首个状态字符串，便于上层使用 switch 统一分支处理。
 func scriptStatus(result interface{}) string {
 	switch value := result.(type) {
 	case string:
@@ -438,6 +479,8 @@ func scriptStatus(result interface{}) string {
 	}
 }
 
+// scriptValues 把 Lua 返回的列表统一转为 []int64。
+// go-redis 在不同协议版本下可能返回 int64、string 或 []byte，这里做兼容处理。
 func scriptValues(result interface{}) ([]int64, bool) {
 	items, ok := result.([]interface{})
 	if !ok {
@@ -467,6 +510,8 @@ func scriptValues(result interface{}) ([]int64, bool) {
 	return values, true
 }
 
+// storeError 把 Redis 调用错误统一包装为 ErrStoreUnavailable，
+// 让上层能够通过 errors.Is 稳定识别"基础设施不可用"这一类失败。
 func storeError(err error) error {
 	if err == nil {
 		return nil
@@ -477,6 +522,9 @@ func storeError(err error) error {
 	return fmt.Errorf("%w: %w", ErrStoreUnavailable, err)
 }
 
+// 以下 sessionKey / refreshKey / subjectIndexKey / platformIndexKey / deviceIndexKey
+// 是本包使用的全部 Redis key 布局。所有 key 共享同一前缀，
+// 前缀中的 {} hash tag 保证 Cluster 模式下它们落到同一 slot，Lua 脚本可以原子访问。
 func (m *Manager) sessionKey(sessionID string) string {
 	return m.prefix + ":session:" + sessionID
 }
