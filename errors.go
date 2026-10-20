@@ -41,6 +41,8 @@ var (
 	ErrServiceUnavailable = NewWithStatus(1013, http.StatusServiceUnavailable, "服务暂不可用")
 	// ErrGatewayTimeout 表示网关等待上游服务超时。
 	ErrGatewayTimeout = NewWithStatus(1014, http.StatusGatewayTimeout, "网关超时")
+	// ErrAlreadyExists 表示要创建的资源或唯一标识已存在。
+	ErrAlreadyExists = NewWithStatus(1015, http.StatusConflict, "资源已存在")
 )
 
 // Error 表示可安全返回给 HTTP 客户端的业务错误。

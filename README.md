@@ -472,6 +472,7 @@ errors.Is(err, aurora.ErrNotFound)   // 业务码相同即匹配
 | `ErrForbidden` | 1004 | 403 | 无权访问 |
 | `ErrNotFound` | 1005 | 404 | 资源不存在 |
 | `ErrConflict` | 1008 | 409 | 请求冲突 |
+| `ErrAlreadyExists` | 1015 | 409 | 资源已存在 |
 | `ErrPayloadTooLarge` | 1009 | 413 | 请求体过大 |
 | `ErrTooManyRequests` | 1011 | 429 | 请求过于频繁 |
 | `ErrServiceUnavailable` | 1013 | 503 | 服务暂不可用 |
@@ -909,6 +910,7 @@ var (
     ErrBadGateway          *Error  // 1012 / 502
     ErrServiceUnavailable  *Error  // 1013 / 503
     ErrGatewayTimeout      *Error  // 1014 / 504
+    ErrAlreadyExists       *Error  // 1015 / 409
 )
 ```
 

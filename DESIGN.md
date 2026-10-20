@@ -370,16 +370,21 @@ func (e *Error) Status() int
 
 ```go
 var (
+	ErrInternal            = NewWithStatus(1000, http.StatusInternalServerError, "服务发生异常")
 	ErrBadRequest          = NewWithStatus(1001, http.StatusBadRequest, "请求无效")
-	ErrUnauthorized        = NewWithStatus(1002, http.StatusUnauthorized, "未授权")
-	ErrForbidden           = NewWithStatus(1003, http.StatusForbidden, "禁止访问")
-	ErrNotFound            = NewWithStatus(1004, http.StatusNotFound, "资源未找到")
-	ErrMethodNotAllowed    = NewWithStatus(1005, http.StatusMethodNotAllowed, "方法不允许")
-	ErrConflict            = NewWithStatus(1006, http.StatusConflict, "资源冲突")
-	ErrTooManyRequests     = NewWithStatus(1007, http.StatusTooManyRequests, "请求过多")
-	ErrInternal            = NewWithStatus(1000, http.StatusInternalServerError, "内部服务器错误")
-	ErrServiceUnavailable  = NewWithStatus(1008, http.StatusServiceUnavailable, "服务不可用")
-	ErrGatewayTimeout      = NewWithStatus(1009, http.StatusGatewayTimeout, "网关超时")
+	ErrUnauthorized        = NewWithStatus(1003, http.StatusUnauthorized, "请求未认证")
+	ErrForbidden           = NewWithStatus(1004, http.StatusForbidden, "无权访问")
+	ErrNotFound            = NewWithStatus(1005, http.StatusNotFound, "资源不存在")
+	ErrMethodNotAllowed    = NewWithStatus(1006, http.StatusMethodNotAllowed, "请求方法不允许")
+	ErrRequestTimeout      = NewWithStatus(1007, http.StatusRequestTimeout, "请求超时")
+	ErrConflict            = NewWithStatus(1008, http.StatusConflict, "请求冲突")
+	ErrPayloadTooLarge     = NewWithStatus(1009, http.StatusRequestEntityTooLarge, "请求体过大")
+	ErrUnprocessableEntity = NewWithStatus(1010, http.StatusUnprocessableEntity, "请求无法处理")
+	ErrTooManyRequests     = NewWithStatus(1011, http.StatusTooManyRequests, "请求过于频繁")
+	ErrBadGateway          = NewWithStatus(1012, http.StatusBadGateway, "网关错误")
+	ErrServiceUnavailable  = NewWithStatus(1013, http.StatusServiceUnavailable, "服务暂不可用")
+	ErrGatewayTimeout      = NewWithStatus(1014, http.StatusGatewayTimeout, "网关超时")
+	ErrAlreadyExists       = NewWithStatus(1015, http.StatusConflict, "资源已存在")
 )
 ```
 
