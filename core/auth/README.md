@@ -54,18 +54,24 @@ if err != nil {
 
 ```yaml
 auth:
-  key_prefix: aurora:auth:{auth}
-  signing_secret: replace-with-at-least-32-random-bytes
-  issuer: aurora
-  audience: [aurora-client]
-  access_ttl: 15m
-  refresh_ttl: 168h
-  max_session_ttl: 720h
-  clock_skew: 0s
-  refresh_compensation_timeout: 5s
-  revoke_batch_size: 100
-  idempotency_ttl: 10s
+  admin:
+    key_prefix: aurora:auth:{admin}
+    signing_secret: replace-with-at-least-32-random-bytes
+    issuer: aurora
+    audience: [aurora-client]
+    access_ttl: 15m
+    refresh_ttl: 168h
+    max_session_ttl: 720h
+    clock_skew: 0s
+    refresh_compensation_timeout: 5s
+    revoke_batch_size: 100
+    idempotency_ttl: 10s
 ```
+
+以上是 Lifecycle 的命名实例配置示例，通过 `lifecycle.Auth("admin")` 获取 Manager。
+每个 `auth.<name>` 节点对应独立的 `auth.Config`；直接调用 `auth.New` 时传入该节点解码后的配置即可。
+Lifecycle 未指定 `key_prefix` 时按名称生成 `aurora:auth:{<name>}`，并拒绝实例间前缀冲突。
+直接调用 `auth.New` 的默认前缀仍为 `aurora:auth:{auth}`，手动创建多个实例时应分别配置前缀。
 
 主要默认值和限制：
 

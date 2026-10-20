@@ -22,7 +22,7 @@ func TestNewLifecycleGeneratesDefaultConfig(t *testing.T) {
 	if lifecycle.Logger == nil {
 		t.Fatal("NewLifecycle() did not initialize logger")
 	}
-	if lifecycle.Tracing != nil || lifecycle.Metrics != nil || lifecycle.Database != nil || lifecycle.Redis != nil || lifecycle.Auth != nil || lifecycle.MQPublisher != nil || lifecycle.MQConsumer != nil {
+	if lifecycle.Tracing != nil || lifecycle.Metrics != nil || lifecycle.Database != nil || lifecycle.Redis != nil || len(lifecycle.authManagers) != 0 || lifecycle.MQPublisher != nil || lifecycle.MQConsumer != nil {
 		t.Fatal("commented optional configuration unexpectedly initialized a runtime")
 	}
 	if got := lifecycle.config.Addr; got != ":8080" {
@@ -66,13 +66,14 @@ redis:
   mode: standalone
   addrs: ["127.0.0.1:6379"]
 auth:
-  key_prefix: "service:auth:{sessions}"
-  signing_secret: "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
-  issuer: aurora-test
-  audience: [aurora-client]
-  access_ttl: 15m
-  refresh_ttl: 1h
-  max_session_ttl: 2h
+  admin:
+    key_prefix: "service:auth:{sessions}"
+    signing_secret: "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+    issuer: aurora-test
+    audience: [aurora-client]
+    access_ttl: 15m
+    refresh_ttl: 1h
+    max_session_ttl: 2h
 `
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ auth:
 	if err != nil {
 		t.Fatalf("NewLifecycle() error = %v", err)
 	}
-	if lifecycle.Redis == nil || lifecycle.Auth == nil {
+	if lifecycle.Redis == nil || len(lifecycle.authManagers) != 1 {
 		t.Fatal("configured Redis and auth were not initialized")
 	}
 	if err := lifecycle.Close(context.Background()); err != nil {
@@ -99,9 +100,10 @@ redis:
   mode: standalone
   addrs: ["127.0.0.1:6379"]
 auth:
-  issuer: aurora-test
-  audience: [aurora-client]
-  max_session_ttl: 2h
+  admin:
+    issuer: aurora-test
+    audience: [aurora-client]
+    max_session_ttl: 2h
 `
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)

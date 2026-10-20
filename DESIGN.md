@@ -105,7 +105,7 @@ Logger、TracerProvider、Propagator、MeterProvider、数据库连接、Redis �
 
 `NewLifecycle` 是显式的应用组合根：它加载或生成默认配置，创建启用的 logger、tracing、
 metrics、database、Redis、Auth 和 MQ 资源，并由返回的 `Lifecycle` 持有和关闭这些资源。Auth
-配置段启用时必须同时启用 Redis，并在 `auth.signing_secret` 中提供至少 32 字节的签名密钥；
+配置段启用时必须同时启用 Redis，并在 `auth.<name>.signing_secret` 中分别提供至少 32 字节的签名密钥；
 配置文件必须由部署系统保护。Auth 不单独拥有或关闭 Redis。关闭顺序
 为 HTTP Server、MQ、database、Redis、metrics、tracing、logger、config；默认 database、
 Redis、Auth、MQ、tracing 和 metrics 均关闭，首次启动不会连接外部服务。配置文件中的这些外部
@@ -180,17 +180,19 @@ func NewLifecycle(path ...string) (*Lifecycle, error)
 
 type Lifecycle struct {
 	*Engine
-	Config      *config.Config
-	Logger      *logger.Logger
-	Tracing     *tracing.Runtime
-	Metrics     *metrics.Runtime
-	Database    *gorm.DB
-	Redis       redis.UniversalClient
-	Auth        *auth.Manager
-	MQPublisher mq.Publisher
-	MQConsumer  mq.Consumer
+	Config       *config.Config
+	Logger       *logger.Logger
+	Tracing      *tracing.Runtime
+	Metrics      *metrics.Runtime
+	Database     *gorm.DB
+	Redis        redis.UniversalClient
+	authManagers map[string]*auth.Manager // 初始化完成后只读
+	MQPublisher  mq.Publisher
+	MQConsumer   mq.Consumer
 }
 
+func (l *Lifecycle) Auth(name string) (*auth.Manager, error)
+func (l *Lifecycle) AuthNames() []string
 func (l *Lifecycle) Run(context.Context) error
 func (l *Lifecycle) Start() error
 func (l *Lifecycle) Serve(net.Listener) error
@@ -556,6 +558,8 @@ func (e *Engine) Run(context.Context) error
 
 ```go
 func NewLifecycle(path ...string) (*Lifecycle, error)
+func (l *Lifecycle) Auth(name string) (*auth.Manager, error)
+func (l *Lifecycle) AuthNames() []string
 func (l *Lifecycle) Run(context.Context) error
 func (l *Lifecycle) Start() error
 func (l *Lifecycle) Serve(net.Listener) error
@@ -574,7 +578,19 @@ New
 ```
 
 `NewLifecycle` 在此流程前增加配置加载和资源创建；如果配置文件包含 `auth` 段，生命周期会
-使用同一 Redis 客户端创建 `auth.Manager`，业务代码通过 `lifecycle.Auth` 使用认证能力。
+按 `auth.<name>` 配置使用同一 Redis 客户端创建多个 `auth.Manager`，业务代码通过
+`lifecycle.Auth("admin")` 或 `lifecycle.Auth("user")` 获取指定实例。未找到实例返回包装了
+`ErrAuthInstanceNotFound` 的错误，不设置默认实例或回退。实例表只读，不支持运行时增删或配置热重载。
+`AuthNames()` 返回按名称排序的独立标识切片，其长度即实例数量；无实例或 nil Lifecycle 返回 nil。
+获取标识列表可并发调用，修改返回切片不会影响注册表。
+
+实例名遵循 `[a-z][a-z0-9_-]{0,63}`。配置键经 Viper 归一化为小写，运行时按小写名称精确查找。
+不配置 `auth` 或配置空 map 不创建实例；空实例、未知字段和错误类型拒绝启动。
+实例配置独立严格解码，解码错误不包含配置值，避免暴露签名密钥。
+所有实例按名称排序创建，任一实例失败时整体初始化失败并回滚资源。
+默认 Redis 前缀按名称生成为 `aurora:auth:{<name>}`，拒绝实例间重复的有效前缀。
+各实例独立配置签名密钥、issuer、audience、TTL 和会话策略；实例名不自动写入 JWT 或 Principal.Type。
+不同认证域应使用独立密钥及不同的 issuer、audience。原单实例配置和字段不再支持。
 `Lifecycle` 的 Run、Start、Serve 返回后
 会自动执行一次资源关闭。显式调用 Shutdown 或 Close 也会执行同一套幂等关闭流程。
 

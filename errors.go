@@ -8,6 +8,10 @@ import (
 
 const defaultStatus = http.StatusInternalServerError
 
+// ErrAuthInstanceNotFound indicates that no authentication manager is registered
+// under the requested name. It is a bootstrap error, not an HTTP response error.
+var ErrAuthInstanceNotFound = errors.New("auth instance not found")
+
 var (
 	// ErrInternal 表示服务器内部错误。
 	ErrInternal = NewWithStatus(1000, http.StatusInternalServerError, "服务发生异常")

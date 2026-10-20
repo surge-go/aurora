@@ -202,13 +202,19 @@ Redis 的 `EXPIRE` 都按秒保存。`MaxSessionTTL` 的零值和负值都必须
 
 ```yaml
 auth:
-  key_prefix: aurora:auth:{auth}
-  access_ttl: 15m
-  refresh_ttl: 168h
-  max_session_ttl: 720h # 必填，至少为 1s
-  revoke_batch_size: 100
-  idempotency_ttl: 10s
+  admin:
+    key_prefix: aurora:auth:{admin}
+    access_ttl: 15m
+    refresh_ttl: 168h
+    max_session_ttl: 720h # 必填，至少为 1s
+    revoke_batch_size: 100
+    idempotency_ttl: 10s
 ```
+
+以上是 Lifecycle 的命名实例配置示例，通过 `lifecycle.Auth("admin")` 获取 Manager。
+每个 `auth.<name>` 节点对应独立的 `auth.Config`；直接调用 `auth.New` 时传入该节点解码后的配置即可。
+Lifecycle 未指定 `key_prefix` 时按名称生成 `aurora:auth:{<name>}`，并拒绝实例间前缀冲突。
+直接调用 `auth.New` 的默认前缀仍为 `aurora:auth:{auth}`，手动创建多个实例时应分别配置前缀。
 
 实现应在配置解析阶段拒绝缺失、小于 `1s` 和无法解析的 `max_session_ttl`，而不是等到
 签发或 refresh 时才失败。`RevokeBatchSize` 是单次分页操作的上限，取值必须为 `1-100`。

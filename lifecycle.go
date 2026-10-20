@@ -7,9 +7,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
+	"github.com/go-viper/mapstructure/v2"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/surge-go/aurora/core/auth"
 	coreconfig "github.com/surge-go/aurora/core/config"
@@ -50,7 +52,9 @@ type Lifecycle struct {
 	Metrics  *metrics.Runtime
 	Database *gorm.DB
 	Redis    redis.UniversalClient
-	Auth     *auth.Manager
+
+	// authManagers is populated during construction and is read-only afterwards.
+	authManagers map[string]*auth.Manager
 
 	MQPublisher mq.Publisher
 	MQConsumer  mq.Consumer
@@ -66,8 +70,8 @@ type Lifecycle struct {
 }
 
 // lifecycleConfig 是配置文件的稳定外层结构。
-// 外部资源使用指针表示可选配置段：配置段不存在时保持 nil，生命周期不会
-// 创建对应资源，也不需要在 YAML 中增加 enabled 开关。
+// 外部资源使用指针或 map 表示可选配置段：配置段不存在时保持 nil，生命周期
+// 不会创建对应资源，也不需要在 YAML 中增加 enabled 开关。
 type lifecycleConfig struct {
 	Aurora   Config            `mapstructure:"aurora"`
 	Tracing  *tracing.Config   `mapstructure:"tracing"`
@@ -75,8 +79,11 @@ type lifecycleConfig struct {
 	Logger   logger.Config     `mapstructure:"logger"`
 	Database *database.Config  `mapstructure:"database"`
 	Redis    *coreRedis.Config `mapstructure:"redis"`
-	Auth     *auth.Config      `mapstructure:"auth"`
 	MQ       *lifecycleMQ      `mapstructure:"mq"`
+
+	// Auth is decoded separately to reject unknown fields without leaking secrets
+	// through configuration decoder errors.
+	Auth map[string]auth.Config `mapstructure:"-"`
 }
 
 type lifecycleMQ struct {
@@ -114,6 +121,11 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 	if err := managedConfig.Unmarshal(&settings); err != nil {
 		managedConfig.Close()
 		return nil, fmt.Errorf("decode Aurora config %q: %w", configPath, err)
+	}
+	settings.Auth, err = decodeLifecycleAuth(managedConfig)
+	if err != nil {
+		managedConfig.Close()
+		return nil, err
 	}
 
 	ctx := context.Background()
@@ -199,34 +211,21 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		}
 	}
 
-	var authManager *auth.Manager
-	if settings.Auth != nil {
-		if redisClient == nil {
-			_ = database.Close(db)
-			if metricRuntime != nil {
-				_ = metricRuntime.Shutdown(ctx)
-			}
-			if traceRuntime != nil {
-				_ = traceRuntime.Shutdown(ctx)
-			}
-			_ = log.Sync()
-			managedConfig.Close()
-			return nil, errors.New("initialize auth: redis must be configured")
-		}
-		authManager, err = auth.New(redisClient, *settings.Auth)
-		if err != nil {
+	authManagers, err := newLifecycleAuth(settings.Auth, redisClient)
+	if err != nil {
+		if redisClient != nil {
 			_ = redisClient.Close()
-			_ = database.Close(db)
-			if metricRuntime != nil {
-				_ = metricRuntime.Shutdown(ctx)
-			}
-			if traceRuntime != nil {
-				_ = traceRuntime.Shutdown(ctx)
-			}
-			_ = log.Sync()
-			managedConfig.Close()
-			return nil, fmt.Errorf("initialize auth: %w", err)
 		}
+		_ = database.Close(db)
+		if metricRuntime != nil {
+			_ = metricRuntime.Shutdown(ctx)
+		}
+		if traceRuntime != nil {
+			_ = traceRuntime.Shutdown(ctx)
+		}
+		_ = log.Sync()
+		managedConfig.Close()
+		return nil, err
 	}
 
 	publisher, consumer, err := newLifecycleMQ(settings.MQ, redisClient)
@@ -273,17 +272,135 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 	}
 
 	return &Lifecycle{
-		Engine:      engine,
-		Config:      managedConfig,
-		Logger:      log,
-		Tracing:     traceRuntime,
-		Metrics:     metricRuntime,
-		Database:    db,
-		Redis:       redisClient,
-		Auth:        authManager,
-		MQPublisher: publisher,
-		MQConsumer:  consumer,
+		Engine:       engine,
+		Config:       managedConfig,
+		Logger:       log,
+		Tracing:      traceRuntime,
+		Metrics:      metricRuntime,
+		Database:     db,
+		Redis:        redisClient,
+		authManagers: authManagers,
+		MQPublisher:  publisher,
+		MQConsumer:   consumer,
 	}, nil
+}
+
+// Auth returns the named authentication manager. Names are matched exactly;
+// configuration keys are lowercased by the configuration loader. The registry
+// is immutable after construction and supports concurrent lookups.
+func (l *Lifecycle) Auth(name string) (*auth.Manager, error) {
+	if l == nil {
+		return nil, errors.New("lifecycle is nil")
+	}
+	manager, ok := l.authManagers[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrAuthInstanceNotFound, name)
+	}
+	return manager, nil
+}
+
+// AuthNames returns a sorted copy of the registered authentication manager names.
+// A nil lifecycle or an empty registry returns nil. Concurrent calls are safe.
+func (l *Lifecycle) AuthNames() []string {
+	if l == nil || len(l.authManagers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(l.authManagers))
+	for name := range l.authManagers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Decode each instance independently so malformed fields cannot expose signing
+// secrets in mapstructure's detailed conversion errors. Other configuration
+// sections retain their existing decoding behavior.
+func decodeLifecycleAuth(config *coreconfig.Config) (map[string]auth.Config, error) {
+	raw := coreconfig.Get[any](config, "auth")
+	if raw == nil {
+		return nil, nil
+	}
+	instances, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("initialize auth: %w: expected a map of named instances", auth.ErrInvalidConfig)
+	}
+	names := make([]string, 0, len(instances))
+	for name := range instances {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	configs := make(map[string]auth.Config, len(instances))
+	for _, name := range names {
+		if !validAuthInstanceName(name) {
+			return nil, fmt.Errorf("initialize auth %q: %w: name must match [a-z][a-z0-9_-]{0,63}", name, auth.ErrInvalidConfig)
+		}
+		fields, ok := instances[name].(map[string]any)
+		if !ok || len(fields) == 0 {
+			return nil, fmt.Errorf("initialize auth %q: %w: expected a non-empty configuration map", name, auth.ErrInvalidConfig)
+		}
+		var cfg auth.Config
+		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			Result:      &cfg,
+			TagName:     "mapstructure",
+			ErrorUnused: true,
+			DecodeHook:  mapstructure.StringToTimeDurationHookFunc(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize auth %q: %w", name, err)
+		}
+		if err := decoder.Decode(fields); err != nil {
+			return nil, fmt.Errorf("initialize auth %q: %w: invalid configuration fields or types", name, auth.ErrInvalidConfig)
+		}
+		configs[name] = cfg
+	}
+	return configs, nil
+}
+
+func validAuthInstanceName(name string) bool {
+	if len(name) == 0 || len(name) > 64 || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func newLifecycleAuth(configs map[string]auth.Config, client redis.UniversalClient) (map[string]*auth.Manager, error) {
+	if len(configs) == 0 {
+		return nil, nil
+	}
+	if client == nil {
+		return nil, errors.New("initialize auth: redis must be configured")
+	}
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	managers := make(map[string]*auth.Manager, len(configs))
+	prefixOwners := make(map[string]string, len(configs))
+	for _, name := range names {
+		cfg := configs[name]
+		cfg.KeyPrefix = strings.TrimSpace(cfg.KeyPrefix)
+		if cfg.KeyPrefix == "" {
+			cfg.KeyPrefix = "aurora:auth:{" + name + "}"
+		}
+		if owner, exists := prefixOwners[cfg.KeyPrefix]; exists {
+			return nil, fmt.Errorf("initialize auth %q: %w: key_prefix conflicts with instance %q", name, auth.ErrInvalidConfig, owner)
+		}
+		manager, err := auth.New(client, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("initialize auth %q: %w", name, err)
+		}
+		prefixOwners[cfg.KeyPrefix] = name
+		managers[name] = manager
+	}
+	return managers, nil
 }
 
 // Run starts the HTTP server and releases all lifecycle-owned resources when
@@ -769,24 +886,34 @@ logger:
 # Optional auth configuration. Uncomment the whole block to enable JWT/Redis
 # session management. Keep the signing secret protected with the config file.
 # auth:
-#   key_prefix: aurora:auth:{auth}
-#   signing_secret: "replace-with-at-least-32-random-bytes"
-#   issuer: aurora
-#   audience: [aurora-client]
-#   access_ttl: 15m
-#   refresh_ttl: 168h
-#   max_session_ttl: 720h
-#   clock_skew: 0s
-#   revoke_batch_size: 100
-#   policy:
-#     max_sessions: 0
-#     default_platform_policy:
-#       enabled: true
+#   admin:
+#     key_prefix: aurora:auth:{admin}
+#     signing_secret: "replace-with-at-least-32-random-bytes"
+#     issuer: aurora-admin
+#     audience: [admin-client]
+#     access_ttl: 15m
+#     refresh_ttl: 168h
+#     max_session_ttl: 720h
+#     clock_skew: 0s
+#     revoke_batch_size: 100
+#     refresh_compensation_timeout: 5s
+#     policy:
 #       max_sessions: 0
-#       require_device_id: false
-#       kickout_strategy: oldest
-#       exclusive_with: []
-#     platform_policies: {}
+#       default_platform_policy:
+#         enabled: true
+#         max_sessions: 0
+#         require_device_id: false
+#         kickout_strategy: oldest
+#         exclusive_with: []
+#       platform_policies: {}
+#   user:
+#     key_prefix: aurora:auth:{user}
+#     signing_secret: "replace-with-a-different-32-byte-random-secret"
+#     issuer: aurora-user
+#     audience: [user-client]
+#     access_ttl: 30m
+#     refresh_ttl: 168h
+#     max_session_ttl: 720h
 
 # Optional MQ configuration. Uncomment the whole block to enable one adapter.
 # mq:
