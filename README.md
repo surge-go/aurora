@@ -6,7 +6,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![Gin](https://img.shields.io/badge/Gin-1.12-blue?style=flat-square)](https://github.com/gin-gonic/gin)
-[![Version](https://img.shields.io/badge/version-v0.0.3-orange?style=flat-square)](https://github.com/surge-go/aurora/releases)
+[![Version](https://img.shields.io/badge/version-v0.0.4-orange?style=flat-square)](https://github.com/surge-go/aurora/releases)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
 [![Go Report Card](https://img.shields.io/badge/Go%20Report%20Card-retired-9f9f9f?style=flat-square)](https://goreportcard.com/report/github.com/surge-go/aurora)
 [![Go Reference](https://pkg.go.dev/badge/github.com/surge-go/aurora.svg)](https://pkg.go.dev/github.com/surge-go/aurora)
@@ -204,7 +204,7 @@ aurora:
 # Uncomment an optional tracing block to enable it.
 # tracing:
 #   service_name: aurora
-#   service_version: "0.0.3"
+#   service_version: "0.0.4"
 #   endpoint: "localhost:4317"
 #   protocol: grpc
 #   insecure: true
@@ -212,7 +212,7 @@ aurora:
 # Uncomment an optional metrics block to enable it.
 # metrics:
 #   service_name: aurora
-#   service_version: "0.0.3"
+#   service_version: "0.0.4"
 #   endpoint: "localhost:4317"
 #   protocol: grpc
 #   insecure: true
@@ -981,7 +981,7 @@ type TracingRuntime interface {
 
 ## 📌 版本与兼容性
 
-当前版本:**`v0.0.3`**(第一阶段,API 仍在演进)
+当前版本:**`v0.0.4`**(第一阶段,API 仍在演进)
 
 | 版本 | 状态 | 说明 |
 | --- | --- | --- |
