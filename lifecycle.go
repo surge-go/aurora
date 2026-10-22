@@ -20,10 +20,10 @@ import (
 	"github.com/surge-go/aurora/core/logger"
 	"github.com/surge-go/aurora/core/metrics"
 	"github.com/surge-go/aurora/core/mq"
-	"github.com/surge-go/aurora/core/ratelimit"
 	mqkafka "github.com/surge-go/aurora/core/mq/kafka"
 	mqrabbitmq "github.com/surge-go/aurora/core/mq/rabbitmq"
 	mqredis "github.com/surge-go/aurora/core/mq/redis"
+	"github.com/surge-go/aurora/core/ratelimit"
 	coreRedis "github.com/surge-go/aurora/core/redis"
 	"github.com/surge-go/aurora/core/tracing"
 	"gorm.io/gorm"
@@ -998,50 +998,50 @@ aurora:
     metrics: false                 # 指标采集中间件（需启用 metrics 配置）
 
 # 可选的 middleware 包中间件配置。取消注释需要的中间件块以启用。
-# middleware:
-#   auth:                          # 认证中间件（需启用 auth 配置）
-#     enabled: false               # 是否启用认证中间件
-#     instance: ""                 # 使用的 auth 实例名称（如 "admin"）
-#     skip_paths: []               # 跳过认证的路径列表
-#   ratelimit:                     # IP 限流中间件（需启用 ratelimit 配置）
-#     enabled: false               # 是否启用限流中间件
-#     instance: ""                 # 使用的 ratelimit 实例名称（如 "api"）
-#     skip_paths: []               # 跳过限流的路径列表
-#     key_func: ""                 # 限流键提取函数: client_ip（默认）, custom
+#middleware:
+#  auth:                          # 认证中间件（需启用 auth 配置）
+#    enabled: false               # 是否启用认证中间件
+#    instance: ""                 # 使用的 auth 实例名称（如 "admin"）
+#    skip_paths: []               # 跳过认证的路径列表
+#  ratelimit:                     # IP 限流中间件（需启用 ratelimit 配置）
+#    enabled: false               # 是否启用限流中间件
+#    instance: ""                 # 使用的 ratelimit 实例名称（如 "api"）
+#    skip_paths: []               # 跳过限流的路径列表
+#    key_func: ""                 # 限流键提取函数: client_ip（默认）, custom
 
 # 可选的链路追踪配置。取消注释整个块以启用。
-# tracing:
-#   service_name: aurora           # 服务名称
-#   service_version: "0.0.5"       # 服务版本
-#   environment: development       # 环境标识: development, staging, production
-#   endpoint: "localhost:4317"     # OTLP collector 地址
-#   protocol: grpc                 # 协议: grpc 或 http
-#   insecure: true                 # 是否跳过 TLS 验证
-#   sample_ratio: 1                # 采样率 (0-1)
-#   headers: {}                    # 自定义请求头
-#   batch:
-#     max_queue_size: 2048         # 最大队列大小
-#     max_export_batch_size: 512   # 单次导出最大批次
-#     schedule_delay: 5s           # 批量导出延迟
-#     export_timeout: 30s          # 单次导出超时
-#   resource:
-#     service_namespace: aurora    # 服务命名空间
-#     deployment_environment: development # 部署环境
+#tracing:
+#  service_name: aurora           # 服务名称
+#  service_version: "0.0.5"       # 服务版本
+#  environment: development       # 环境标识: development, staging, production
+#  endpoint: "localhost:4317"     # OTLP collector 地址
+#  protocol: grpc                 # 协议: grpc 或 http
+#  insecure: true                 # 是否跳过 TLS 验证
+#  sample_ratio: 1                # 采样率 (0-1)
+#  headers: {}                    # 自定义请求头
+#  batch:
+#    max_queue_size: 2048         # 最大队列大小
+#    max_export_batch_size: 512   # 单次导出最大批次
+#    schedule_delay: 5s           # 批量导出延迟
+#    export_timeout: 30s          # 单次导出超时
+#  resource:
+#    service_namespace: aurora    # 服务命名空间
+#    deployment_environment: development # 部署环境
 
 # 可选的指标采集配置。取消注释整个块以启用。
-# metrics:
-#   service_name: aurora           # 服务名称
-#   service_version: "0.0.5"       # 服务版本
-#   environment: development       # 环境标识
-#   endpoint: "localhost:4317"     # OTLP collector 地址
-#   protocol: grpc                 # 协议: grpc 或 http
-#   insecure: true                 # 是否跳过 TLS 验证
-#   headers: {}                    # 自定义请求头
-#   export_interval: 15s           # 指标导出间隔
-#   export_timeout: 10s            # 单次导出超时
-#   resource:
-#     service_namespace: aurora    # 服务命名空间
-#     deployment_environment: development # 部署环境
+#metrics:
+#  service_name: aurora           # 服务名称
+#  service_version: "0.0.5"       # 服务版本
+#  environment: development       # 环境标识
+#  endpoint: "localhost:4317"     # OTLP collector 地址
+#  protocol: grpc                 # 协议: grpc 或 http
+#  insecure: true                 # 是否跳过 TLS 验证
+#  headers: {}                    # 自定义请求头
+#  export_interval: 15s           # 指标导出间隔
+#  export_timeout: 10s            # 单次导出超时
+#  resource:
+#    service_namespace: aurora    # 服务命名空间
+#    deployment_environment: development # 部署环境
 
 logger:
   level: info                      # 日志级别: debug, info, warn, error
@@ -1080,258 +1080,258 @@ logger:
   #   thereafter: 100              # 后续采样数
 
 # 可选的数据库配置。取消注释整个块以启用。
-# database:
-#   driver: sqlite                 # 数据库驱动: postgres, mysql, sqlite
-#   dsn: "./data/aurora.db"        # 数据源名称（连接字符串）
-#   pool:
-#     max_open_conns: 20           # 最大打开连接数
-#     max_idle_conns: 5            # 最大空闲连接数
-#     conn_max_lifetime: 1h        # 连接最大生存时间
-#     conn_max_idle_time: 10m      # 连接最大空闲时间
-#   gorm:
-#     skip_default_transaction: false # 是否跳过默认事务
-#     dry_run: false               # 是否空运行（不执行SQL）
-#     prepare_stmt: true           # 是否使用预编译语句
-#     disable_nested_transaction: false # 是否禁用嵌套事务
-#     allow_global_update: false   # 是否允许全局更新
-#     disable_automatic_ping: false # 是否禁用自动 ping
-#   naming:
-#     table_prefix: ""             # 表名前缀
-#     singular_table: false        # 是否使用单数表名
-#     no_lower_case: false         # 是否不转小写
-#     identifier_max_length: 0     # 标识符最大长度（0 表示无限制）
-#   logger:
-#     level: warn                  # GORM 日志级别
-#     log_sql: false
-#     slow_threshold: 200ms
-#     ignore_record_not_found_error: true
-#     parameterized_queries: true
-#     colorful: false
-#   migration:
-#     disable_foreign_key_constraint_when_migrating: false
-#   monitoring:
-#     tracing_enabled: false
-#     metrics_enabled: false
-#   resolver:
-#     sources: []
-#     replicas: []
-#     policy: random
-#     trace_resolver_mode: false
+#database:
+#  driver: sqlite                 # 数据库驱动: postgres, mysql, sqlite
+#  dsn: "./data/aurora.db"        # 数据源名称（连接字符串）
+#  pool:
+#    max_open_conns: 20           # 最大打开连接数
+#    max_idle_conns: 5            # 最大空闲连接数
+#    conn_max_lifetime: 1h        # 连接最大生存时间
+#    conn_max_idle_time: 10m      # 连接最大空闲时间
+#  gorm:
+#    skip_default_transaction: false # 是否跳过默认事务
+#    dry_run: false               # 是否空运行（不执行SQL）
+#    prepare_stmt: true           # 是否使用预编译语句
+#    disable_nested_transaction: false # 是否禁用嵌套事务
+#    allow_global_update: false   # 是否允许全局更新
+#    disable_automatic_ping: false # 是否禁用自动 ping
+#  naming:
+#    table_prefix: ""             # 表名前缀
+#    singular_table: false        # 是否使用单数表名
+#    no_lower_case: false         # 是否不转小写
+#    identifier_max_length: 0     # 标识符最大长度（0 表示无限制）
+#  logger:
+#    level: warn                  # GORM 日志级别
+#    log_sql: false
+#    slow_threshold: 200ms
+#    ignore_record_not_found_error: true
+#    parameterized_queries: true
+#    colorful: false
+#  migration:
+#    disable_foreign_key_constraint_when_migrating: false
+#  monitoring:
+#    tracing_enabled: false
+#    metrics_enabled: false
+#  resolver:
+#    sources: []
+#    replicas: []
+#    policy: random
+#    trace_resolver_mode: false
 
 # 可选的 Redis 配置。取消注释整个块以启用。
-# redis:
-#   mode: standalone               # 模式: standalone, sentinel, cluster
-#   addrs: ["127.0.0.1:6379"]      # 地址列表
-#   network: tcp                   # 网络类型: tcp, unix
-#   db: 0                          # 数据库编号（仅 standalone/sentinel）
-#   username: ""                   # 用户名（Redis 6.0+）
-#   password: ""                   # 密码
-#   client_name: aurora            # 客户端名称
-#   protocol: 3                    # Redis 协议版本: 2, 3
-#   disable_identity: false        # 是否禁用客户端标识
-#   identity_suffix: ""            # 客户端标识后缀
-#   timeout:
-#     dial_timeout: 5s             # 连接超时
-#     dialer_retries: 5            # 拨号重试次数
-#     dialer_retry_timeout: 5s     # 拨号重试总超时
-#     read_timeout: 3s             # 读取超时
-#     write_timeout: 3s            # 写入超时
-#     pool_timeout: 4s             # 获取连接超时
-#     context_timeout_enabled: true # 是否启用 context 超时
-#   retry:
-#     max_retries: 3               # 最大重试次数
-#     min_retry_backoff: 8ms       # 最小重试间隔
-#     max_retry_backoff: 512ms     # 最大重试间隔
-#   pool:
-#     fifo: false                  # 是否使用 FIFO 池
-#     size: 20                     # 连接池大小（每个 CPU 核心）
-#     max_concurrent_dials: 0      # 最大并发拨号数（0 表示无限制）
-#     min_idle_conns: 2            # 最小空闲连接数
-#     max_idle_conns: 10           # 最大空闲连接数
-#     max_active_conns: 0          # 最大活跃连接数（0 表示无限制）
-#     conn_max_idle_time: 30m      # 连接最大空闲时间
-#     conn_max_lifetime: 0s        # 连接最大生存时间（0 表示无限制）
-#     conn_max_lifetime_jitter: 0s # 连接生存时间抖动
-#   buffer:
-#     read_buffer_size: 0          # 读缓冲区大小（0 表示默认值）
-#     write_buffer_size: 0         # 写缓冲区大小（0 表示默认值）
-#   tls:
-#     enabled: false               # 是否启用 TLS
-#     server_name: ""              # TLS 服务器名称
-#     insecure_skip_verify: false  # 是否跳过证书验证
-#     ca_file: ""                  # CA 证书文件路径
-#     cert_file: ""                # 客户端证书文件路径
-#     key_file: ""                 # 客户端私钥文件路径
-#   monitoring:
-#     tracing_enabled: false       # 是否启用链路追踪
-#     db_statement_enabled: false  # 是否记录命令详情
-#     caller_enabled: false        # 是否记录调用位置
-#     dial_enabled: false          # 是否追踪连接建立
-#     metrics_enabled: false       # 是否启用指标采集
-#   # Sentinel 模式配置（使用时将 mode 改为 sentinel，addrs 改为哨兵节点地址）:
-#   # sentinel:
-#   #   master_name: primary       # 主节点名称
-#   #   username: ""               # 哨兵用户名
-#   #   password: ""               # 哨兵密码
-#   # Cluster 模式配置（使用时将 mode 改为 cluster，addrs 改为集群节点地址）:
-#   # cluster:
-#   #   max_redirects: 3           # 最大重定向次数
-#   #   read_only: false           # 是否允许从副本读取
-#   #   route_by_latency: false    # 是否根据延迟路由
-#   #   route_randomly: false      # 是否随机路由
-#   #   failing_timeout_seconds: 15 # 节点标记为失败的超时时间
-#   #   cluster_state_reload_interval: 0s # 集群状态重新加载间隔
+#redis:
+#  mode: standalone               # 模式: standalone, sentinel, cluster
+#  addrs: ["127.0.0.1:6379"]      # 地址列表
+#  network: tcp                   # 网络类型: tcp, unix
+#  db: 0                          # 数据库编号（仅 standalone/sentinel）
+#  username: ""                   # 用户名（Redis 6.0+）
+#  password: ""                   # 密码
+#  client_name: aurora            # 客户端名称
+#  protocol: 3                    # Redis 协议版本: 2, 3
+#  disable_identity: false        # 是否禁用客户端标识
+#  identity_suffix: ""            # 客户端标识后缀
+#  timeout:
+#    dial_timeout: 5s             # 连接超时
+#    dialer_retries: 5            # 拨号重试次数
+#    dialer_retry_timeout: 5s     # 拨号重试总超时
+#    read_timeout: 3s             # 读取超时
+#    write_timeout: 3s            # 写入超时
+#    pool_timeout: 4s             # 获取连接超时
+#    context_timeout_enabled: true # 是否启用 context 超时
+#  retry:
+#    max_retries: 3               # 最大重试次数
+#    min_retry_backoff: 8ms       # 最小重试间隔
+#    max_retry_backoff: 512ms     # 最大重试间隔
+#  pool:
+#    fifo: false                  # 是否使用 FIFO 池
+#    size: 20                     # 连接池大小（每个 CPU 核心）
+#    max_concurrent_dials: 0      # 最大并发拨号数（0 表示无限制）
+#    min_idle_conns: 2            # 最小空闲连接数
+#    max_idle_conns: 10           # 最大空闲连接数
+#    max_active_conns: 0          # 最大活跃连接数（0 表示无限制）
+#    conn_max_idle_time: 30m      # 连接最大空闲时间
+#    conn_max_lifetime: 0s        # 连接最大生存时间（0 表示无限制）
+#    conn_max_lifetime_jitter: 0s # 连接生存时间抖动
+#  buffer:
+#    read_buffer_size: 0          # 读缓冲区大小（0 表示默认值）
+#    write_buffer_size: 0         # 写缓冲区大小（0 表示默认值）
+#  tls:
+#    enabled: false               # 是否启用 TLS
+#    server_name: ""              # TLS 服务器名称
+#    insecure_skip_verify: false  # 是否跳过证书验证
+#    ca_file: ""                  # CA 证书文件路径
+#    cert_file: ""                # 客户端证书文件路径
+#    key_file: ""                 # 客户端私钥文件路径
+#  monitoring:
+#    tracing_enabled: false       # 是否启用链路追踪
+#    db_statement_enabled: false  # 是否记录命令详情
+#    caller_enabled: false        # 是否记录调用位置
+#    dial_enabled: false          # 是否追踪连接建立
+#    metrics_enabled: false       # 是否启用指标采集
+#  # Sentinel 模式配置（使用时将 mode 改为 sentinel，addrs 改为哨兵节点地址）:
+#  # sentinel:
+#  #   master_name: primary       # 主节点名称
+#  #   username: ""               # 哨兵用户名
+#  #   password: ""               # 哨兵密码
+#  # Cluster 模式配置（使用时将 mode 改为 cluster，addrs 改为集群节点地址）:
+#  # cluster:
+#  #   max_redirects: 3           # 最大重定向次数
+#  #   read_only: false           # 是否允许从副本读取
+#  #   route_by_latency: false    # 是否根据延迟路由
+#  #   route_randomly: false      # 是否随机路由
+#  #   failing_timeout_seconds: 15 # 节点标记为失败的超时时间
+#  #   cluster_state_reload_interval: 0s # 集群状态重新加载间隔
 
 # 可选的认证配置。取消注释整个块以启用 JWT/Redis 会话管理。
 # 注意：signing_secret 必须妥善保护，建议使用环境变量或密钥管理系统。
-# auth:
-#   admin:
-#     key_prefix: aurora:auth:{admin}              # Redis key 前缀（必须包含 hash tag）
-#     signing_secret: "replace-with-at-least-32-random-bytes" # JWT 签名密钥（至少 32 字节）
-#     issuer: aurora-admin                         # JWT 签发者
-#     audience: [admin-client]                     # JWT 受众列表
-#     access_ttl: 15m                              # 访问令牌有效期
-#     refresh_ttl: 168h                            # 刷新令牌有效期（7天）
-#     max_session_ttl: 720h                        # 会话最大生存时间（30天）
-#     clock_skew: 0s                               # 时钟偏移容忍度
-#     revoke_batch_size: 100                       # 批量吊销时的批次大小
-#     refresh_compensation_timeout: 5s             # 刷新补偿操作超时
-#     policy:
-#       max_sessions: 0                            # 全局最大会话数（0 表示无限制）
-#       default_platform_policy:
-#         enabled: true                            # 是否启用默认平台策略
-#         max_sessions: 0                          # 平台最大会话数（0 表示无限制）
-#         require_device_id: false                 # 是否要求设备 ID
-#         kickout_strategy: oldest                 # 踢出策略: oldest, newest
-#         exclusive_with: []                       # 互斥平台列表
-#       platform_policies: {}                      # 各平台自定义策略
-#   user:
-#     key_prefix: aurora:auth:{user}
-#     signing_secret: "replace-with-a-different-32-byte-random-secret"
-#     issuer: aurora-user
-#     audience: [user-client]
-#     access_ttl: 30m
-#     refresh_ttl: 168h
-#     max_session_ttl: 720h
+#auth:
+#  admin:
+#    key_prefix: aurora:auth:{admin}              # Redis key 前缀（必须包含 hash tag）
+#    signing_secret: "replace-with-at-least-32-random-bytes" # JWT 签名密钥（至少 32 字节）
+#    issuer: aurora-admin                         # JWT 签发者
+#    audience: [admin-client]                     # JWT 受众列表
+#    access_ttl: 15m                              # 访问令牌有效期
+#    refresh_ttl: 168h                            # 刷新令牌有效期（7天）
+#    max_session_ttl: 720h                        # 会话最大生存时间（30天）
+#    clock_skew: 0s                               # 时钟偏移容忍度
+#    revoke_batch_size: 100                       # 批量吊销时的批次大小
+#    refresh_compensation_timeout: 5s             # 刷新补偿操作超时
+#    policy:
+#      max_sessions: 0                            # 全局最大会话数（0 表示无限制）
+#      default_platform_policy:
+#        enabled: true                            # 是否启用默认平台策略
+#        max_sessions: 0                          # 平台最大会话数（0 表示无限制）
+#        require_device_id: false                 # 是否要求设备 ID
+#        kickout_strategy: oldest                 # 踢出策略: oldest, newest
+#        exclusive_with: []                       # 互斥平台列表
+#      platform_policies: {}                      # 各平台自定义策略
+#  user:
+#    key_prefix: aurora:auth:{user}
+#    signing_secret: "replace-with-a-different-32-byte-random-secret"
+#    issuer: aurora-user
+#    audience: [user-client]
+#    access_ttl: 30m
+#    refresh_ttl: 168h
+#    max_session_ttl: 720h
 
 # 可选的登录失败计数配置。取消注释整个块以启用登录失败追踪和账号锁定。
 # 需要同时配置 Redis。
-# attempt:
-#   admin:
-#     key_prefix: aurora:auth:attempt:{admin}      # Redis key 前缀（必须包含 hash tag）
-#     hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
-#     failure_limit: 5                             # 失败次数阈值
-#     window: 10m                                  # 统计窗口大小
-#     lock_duration: 15m                           # 锁定持续时间
-#     attempt_ttl: 10m                             # 失败记录 TTL
-#   user:
-#     key_prefix: aurora:auth:attempt:{user}
-#     hmac_key: "replace-with-a-different-32-byte-random-secret"
-#     failure_limit: 3
-#     window: 5m
-#     lock_duration: 10m
-#     attempt_ttl: 5m
+#attempt:
+#  admin:
+#    key_prefix: aurora:auth:attempt:{admin}      # Redis key 前缀（必须包含 hash tag）
+#    hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
+#    failure_limit: 5                             # 失败次数阈值
+#    window: 10m                                  # 统计窗口大小
+#    lock_duration: 15m                           # 锁定持续时间
+#    attempt_ttl: 10m                             # 失败记录 TTL
+#  user:
+#    key_prefix: aurora:auth:attempt:{user}
+#    hmac_key: "replace-with-a-different-32-byte-random-secret"
+#    failure_limit: 3
+#    window: 5m
+#    lock_duration: 10m
+#    attempt_ttl: 5m
 
 # 可选的限流器配置。取消注释整个块以启用分布式限流。
 # 需要同时配置 Redis。
-# ratelimit:
-#   api:
-#     key_prefix: aurora:ratelimit:{api}           # Redis key 前缀（必须包含 hash tag）
-#     hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
-#     limit: 100                                   # 时间窗口内最大请求数
-#     window: 1m                                   # 滑动窗口大小
-#   strict:
-#     key_prefix: aurora:ratelimit:{strict}
-#     hmac_key: "replace-with-a-different-32-byte-random-secret"
-#     limit: 10
-#     window: 1m
+#ratelimit:
+#  api:
+#    key_prefix: aurora:ratelimit:{api}           # Redis key 前缀（必须包含 hash tag）
+#    hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
+#    limit: 100                                   # 时间窗口内最大请求数
+#    window: 1m                                   # 滑动窗口大小
+#  strict:
+#    key_prefix: aurora:ratelimit:{strict}
+#    hmac_key: "replace-with-a-different-32-byte-random-secret"
+#    limit: 10
+#    window: 1m
 
 # 可选的消息队列配置。取消注释整个块以启用其中一种适配器。
-# mq:
-#   driver: redis                  # 驱动类型: redis, rabbitmq, kafka
-#   redis:
-#     own_client: false            # 是否使用独立 Redis 客户端
-#     group: aurora                # 消费者组名称
-#     consumer: aurora             # 消费者名称
-#     start_id: "0-0"              # 起始消息 ID
-#     read_count: 10               # 每次读取消息数
-#     block: 5s                    # 阻塞等待时间
-#     claim_idle: 30s              # 消息认领空闲时间
-#     disable_claim: false         # 是否禁用消息认领
-#     max_payload: 10485760        # 最大消息体大小 (10MB)
-#   rabbitmq:
-#     url: "amqp://user:password@rabbitmq:5672/aurora" # 连接 URL
-#     declare_topology: true       # 是否声明拓扑结构
-#     publisher:
-#       confirm: true              # 是否启用发布确认
-#       mandatory: true            # 消息路由失败时是否返回
-#       timeout: 30s               # 发布超时
-#     consumer:
-#       prefetch: 10               # 预取消息数
-#       concurrency: 1             # 并发消费者数
-#       consumer_tag: aurora       # 消费者标签
-#       shutdown_timeout: 30s      # 关闭超时
-#       reconnect_attempts: 3      # 重连尝试次数
-#       reconnect_backoff: 250ms   # 重连间隔
-#     failure:
-#       mode: reject               # 失败模式: reject, requeue, drop
-#       allow_drop: false          # 是否允许丢弃消息
-#     dead_letter:
-#       exchange: aurora.dlx       # 死信交换机
-#       routing_key: ""            # 死信路由键
-#     max_payload: 10485760        # 最大消息体大小 (10MB)
-#     tls:
-#       ca_file: /etc/aurora/rabbitmq/ca.pem        # CA 证书文件
-#       cert_file: /etc/aurora/rabbitmq/client.pem  # 客户端证书文件
-#       key_file: /etc/aurora/rabbitmq/client-key.pem # 客户端私钥文件
-#       server_name: rabbitmq      # TLS 服务器名称
-#       insecure_skip_verify: false # 是否跳过证书验证
-#     routes:
-#       orders:
-#         exchange: aurora.orders  # 交换机名称
-#         exchange_type: topic     # 交换机类型: direct, topic, fanout, headers
-#         routing_key: order.created # 路由键
-#         queue: aurora.orders.worker # 队列名称
-#         durable: true            # 是否持久化
-#         auto_delete: false       # 是否自动删除
-#         exclusive: false         # 是否独占
-#         exchange_arguments: {}   # 交换机参数
-#         queue_arguments: {}      # 队列参数
-#         bindings:
-#           - queue: aurora.orders.worker
-#             routing_key: order.created
-#             arguments: {}
-#   kafka:
-#     brokers: ["kafka:9092"]      # Broker 地址列表
-#     client_id: aurora            # 客户端 ID
-#     max_payload: 10485760        # 最大消息体大小 (10MB)
-#     routes:
-#       orders:
-#         topic: aurora.orders.v1  # Topic 名称
-#     producer:
-#       timeout: 30s               # 生产超时
-#       max_retries: 5             # 最大重试次数
-#     tls:
-#       ca_file: /etc/aurora/kafka/ca.pem           # CA 证书文件
-#       cert_file: /etc/aurora/kafka/client.pem     # 客户端证书文件
-#       key_file: /etc/aurora/kafka/client-key.pem  # 客户端私钥文件
-#       server_name: kafka         # TLS 服务器名称
-#       insecure_skip_verify: false # 是否跳过证书验证
-#     sasl:
-#       mechanism: scram_sha_512   # SASL 机制: plain, scram_sha_256, scram_sha_512
-#       username: kafka-user       # 用户名
-#       password: replace-me       # 密码
-#     consumer:
-#       group_id: aurora           # 消费者组 ID
-#       concurrency: 4             # 并发消费者数
-#       start_offset: earliest     # 起始偏移量: earliest, latest
-#       session_timeout: 45s       # 会话超时
-#       rebalance_timeout: 60s     # 重平衡超时
-#       retry:
-#         max_attempts: 3          # 最大重试次数
-#         backoff: 500ms           # 重试间隔
-#       failure:
-#         mode: stop               # 失败模式: stop, skip, retry
-#         dead_letter_route: ""    # 死信路由名称
-#         allow_drop: false        # 是否允许丢弃消息
+#mq:
+#  driver: redis                  # 驱动类型: redis, rabbitmq, kafka
+#  redis:
+#    own_client: false            # 是否使用独立 Redis 客户端
+#    group: aurora                # 消费者组名称
+#    consumer: aurora             # 消费者名称
+#    start_id: "0-0"              # 起始消息 ID
+#    read_count: 10               # 每次读取消息数
+#    block: 5s                    # 阻塞等待时间
+#    claim_idle: 30s              # 消息认领空闲时间
+#    disable_claim: false         # 是否禁用消息认领
+#    max_payload: 10485760        # 最大消息体大小 (10MB)
+#  rabbitmq:
+#    url: "amqp://user:password@rabbitmq:5672/aurora" # 连接 URL
+#    declare_topology: true       # 是否声明拓扑结构
+#    publisher:
+#      confirm: true              # 是否启用发布确认
+#      mandatory: true            # 消息路由失败时是否返回
+#      timeout: 30s               # 发布超时
+#    consumer:
+#      prefetch: 10               # 预取消息数
+#      concurrency: 1             # 并发消费者数
+#      consumer_tag: aurora       # 消费者标签
+#      shutdown_timeout: 30s      # 关闭超时
+#      reconnect_attempts: 3      # 重连尝试次数
+#      reconnect_backoff: 250ms   # 重连间隔
+#    failure:
+#      mode: reject               # 失败模式: reject, requeue, drop
+#      allow_drop: false          # 是否允许丢弃消息
+#    dead_letter:
+#      exchange: aurora.dlx       # 死信交换机
+#      routing_key: ""            # 死信路由键
+#    max_payload: 10485760        # 最大消息体大小 (10MB)
+#    tls:
+#      ca_file: /etc/aurora/rabbitmq/ca.pem        # CA 证书文件
+#      cert_file: /etc/aurora/rabbitmq/client.pem  # 客户端证书文件
+#      key_file: /etc/aurora/rabbitmq/client-key.pem # 客户端私钥文件
+#      server_name: rabbitmq      # TLS 服务器名称
+#      insecure_skip_verify: false # 是否跳过证书验证
+#    routes:
+#      orders:
+#        exchange: aurora.orders  # 交换机名称
+#        exchange_type: topic     # 交换机类型: direct, topic, fanout, headers
+#        routing_key: order.created # 路由键
+#        queue: aurora.orders.worker # 队列名称
+#        durable: true            # 是否持久化
+#        auto_delete: false       # 是否自动删除
+#        exclusive: false         # 是否独占
+#        exchange_arguments: {}   # 交换机参数
+#        queue_arguments: {}      # 队列参数
+#        bindings:
+#          - queue: aurora.orders.worker
+#            routing_key: order.created
+#            arguments: {}
+#  kafka:
+#    brokers: ["kafka:9092"]      # Broker 地址列表
+#    client_id: aurora            # 客户端 ID
+#    max_payload: 10485760        # 最大消息体大小 (10MB)
+#    routes:
+#      orders:
+#        topic: aurora.orders.v1  # Topic 名称
+#    producer:
+#      timeout: 30s               # 生产超时
+#      max_retries: 5             # 最大重试次数
+#    tls:
+#      ca_file: /etc/aurora/kafka/ca.pem           # CA 证书文件
+#      cert_file: /etc/aurora/kafka/client.pem     # 客户端证书文件
+#      key_file: /etc/aurora/kafka/client-key.pem  # 客户端私钥文件
+#      server_name: kafka         # TLS 服务器名称
+#      insecure_skip_verify: false # 是否跳过证书验证
+#    sasl:
+#      mechanism: scram_sha_512   # SASL 机制: plain, scram_sha_256, scram_sha_512
+#      username: kafka-user       # 用户名
+#      password: replace-me       # 密码
+#    consumer:
+#      group_id: aurora           # 消费者组 ID
+#      concurrency: 4             # 并发消费者数
+#      start_offset: earliest     # 起始偏移量: earliest, latest
+#      session_timeout: 45s       # 会话超时
+#      rebalance_timeout: 60s     # 重平衡超时
+#      retry:
+#        max_attempts: 3          # 最大重试次数
+#        backoff: 500ms           # 重试间隔
+#      failure:
+#        mode: stop               # 失败模式: stop, skip, retry
+#        dead_letter_route: ""    # 死信路由名称
+#        allow_drop: false        # 是否允许丢弃消息
 `
