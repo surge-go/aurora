@@ -298,6 +298,10 @@ count := len(names)            // 2
 `refresh_compensation_timeout` 用于限制 refresh 轮换已提交、但后置状态校验失败时的补偿吊销操作，默认 `5s`，允许范围为 `1s-1m`。
 补偿吊销使用独立的有界 context，Redis 暂时不可用时不会让请求无限等待。
 
+Attempt（登录失败计数）和 RateLimit（限流）同样支持按名称配置多个实例，配置在 `attempt` 和 `ratelimit` 字段，
+分别通过 `lifecycle.Attempt(name)` 和 `lifecycle.RateLimit(name)` 获取实例。它们与 Auth 遵循相同的命名规则、
+初始化顺序、资源复用和生命周期管理策略。配置示例已包含在 `aurora.yaml` 模板中。
+
 未写入配置段的组件不会初始化；启用 tracing 或 metrics 后必须替换为实际 collector 地址。
 Redis Streams 依赖同一份 `redis` 客户端，启用 MQ Redis adapter 时也必须同时配置 Redis。
 配置中的运行时 client、dialer、provider 和 logger 不会写入 YAML，而是在 `NewLifecycle` 内部装配。
@@ -686,6 +690,10 @@ func (e *Engine) Listening() bool
 func NewLifecycle(path ...string) (*Lifecycle, error)
 func (l *Lifecycle) Auth(name string) (*auth.Manager, error)
 func (l *Lifecycle) AuthNames() []string
+func (l *Lifecycle) Attempt(name string) (*attempt.Limiter, error)
+func (l *Lifecycle) AttemptNames() []string
+func (l *Lifecycle) RateLimit(name string) (*ratelimit.Limiter, error)
+func (l *Lifecycle) RateLimitNames() []string
 func (l *Lifecycle) Run(context.Context) error
 func (l *Lifecycle) Start() error
 func (l *Lifecycle) Serve(net.Listener) error

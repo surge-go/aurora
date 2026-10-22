@@ -16,6 +16,10 @@ var ErrAuthInstanceNotFound = errors.New("auth instance not found")
 // under the requested name. It is a bootstrap error, not an HTTP response error.
 var ErrAttemptInstanceNotFound = errors.New("attempt instance not found")
 
+// ErrRateLimitInstanceNotFound indicates that no rate limiter is registered
+// under the requested name. It is a bootstrap error, not an HTTP response error.
+var ErrRateLimitInstanceNotFound = errors.New("ratelimit instance not found")
+
 var (
 	// ErrInternal 表示服务器内部错误。
 	ErrInternal = NewWithStatus(1000, http.StatusInternalServerError, "服务发生异常")
