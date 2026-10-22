@@ -1012,7 +1012,7 @@ aurora:
 # 可选的链路追踪配置。取消注释整个块以启用。
 #tracing:
 #  service_name: aurora           # 服务名称
-#  service_version: "0.0.5"       # 服务版本
+#  service_version: "0.0.6"       # 服务版本
 #  environment: development       # 环境标识: development, staging, production
 #  endpoint: "localhost:4317"     # OTLP collector 地址
 #  protocol: grpc                 # 协议: grpc 或 http
@@ -1031,7 +1031,7 @@ aurora:
 # 可选的指标采集配置。取消注释整个块以启用。
 #metrics:
 #  service_name: aurora           # 服务名称
-#  service_version: "0.0.5"       # 服务版本
+#  service_version: "0.0.6"       # 服务版本
 #  environment: development       # 环境标识
 #  endpoint: "localhost:4317"     # OTLP collector 地址
 #  protocol: grpc                 # 协议: grpc 或 http
@@ -1055,7 +1055,7 @@ logger:
   initial_fields:
     service: aurora                # 服务名称
     environment: development       # 环境标识
-    version: "0.0.5"               # 版本号
+    version: "0.0.6"               # 版本号
   encoder:
     message_key: msg               # 消息字段名
     level_key: level               # 级别字段名

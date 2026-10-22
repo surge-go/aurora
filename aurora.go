@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-const version = "0.0.5"
+const version = "0.0.6"
 
 var ginGlobalMu sync.Mutex
 
