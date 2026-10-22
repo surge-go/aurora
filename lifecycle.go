@@ -14,6 +14,7 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/surge-go/aurora/core/auth"
+	"github.com/surge-go/aurora/core/auth/attempt"
 	coreconfig "github.com/surge-go/aurora/core/config"
 	"github.com/surge-go/aurora/core/database"
 	"github.com/surge-go/aurora/core/logger"
@@ -55,6 +56,8 @@ type Lifecycle struct {
 
 	// authManagers is populated during construction and is read-only afterwards.
 	authManagers map[string]*auth.Manager
+	// attemptLimiters is populated during construction and is read-only afterwards.
+	attemptLimiters map[string]*attempt.Limiter
 
 	MQPublisher mq.Publisher
 	MQConsumer  mq.Consumer
@@ -83,7 +86,8 @@ type lifecycleConfig struct {
 
 	// Auth is decoded separately to reject unknown fields without leaking secrets
 	// through configuration decoder errors.
-	Auth map[string]auth.Config `mapstructure:"-"`
+	Auth    map[string]auth.Config    `mapstructure:"-"`
+	Attempt map[string]attempt.Config `mapstructure:"-"`
 }
 
 type lifecycleMQ struct {
@@ -123,6 +127,11 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		return nil, fmt.Errorf("decode Aurora config %q: %w", configPath, err)
 	}
 	settings.Auth, err = decodeLifecycleAuth(managedConfig)
+	if err != nil {
+		managedConfig.Close()
+		return nil, err
+	}
+	settings.Attempt, err = decodeLifecycleAttempt(managedConfig)
 	if err != nil {
 		managedConfig.Close()
 		return nil, err
@@ -228,6 +237,23 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		return nil, err
 	}
 
+	attemptLimiters, err := newLifecycleAttempt(settings.Attempt, redisClient)
+	if err != nil {
+		if redisClient != nil {
+			_ = redisClient.Close()
+		}
+		_ = database.Close(db)
+		if metricRuntime != nil {
+			_ = metricRuntime.Shutdown(ctx)
+		}
+		if traceRuntime != nil {
+			_ = traceRuntime.Shutdown(ctx)
+		}
+		_ = log.Sync()
+		managedConfig.Close()
+		return nil, err
+	}
+
 	publisher, consumer, err := newLifecycleMQ(settings.MQ, redisClient)
 	if err != nil {
 		if redisClient != nil {
@@ -272,16 +298,17 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 	}
 
 	return &Lifecycle{
-		Engine:       engine,
-		Config:       managedConfig,
-		Logger:       log,
-		Tracing:      traceRuntime,
-		Metrics:      metricRuntime,
-		Database:     db,
-		Redis:        redisClient,
-		authManagers: authManagers,
-		MQPublisher:  publisher,
-		MQConsumer:   consumer,
+		Engine:          engine,
+		Config:          managedConfig,
+		Logger:          log,
+		Tracing:         traceRuntime,
+		Metrics:         metricRuntime,
+		Database:        db,
+		Redis:           redisClient,
+		authManagers:    authManagers,
+		attemptLimiters: attemptLimiters,
+		MQPublisher:     publisher,
+		MQConsumer:      consumer,
 	}, nil
 }
 
@@ -307,6 +334,34 @@ func (l *Lifecycle) AuthNames() []string {
 	}
 	names := make([]string, 0, len(l.authManagers))
 	for name := range l.authManagers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Attempt returns the named attempt limiter. Names are matched exactly;
+// configuration keys are lowercased by the configuration loader. The registry
+// is immutable after construction and supports concurrent lookups.
+func (l *Lifecycle) Attempt(name string) (*attempt.Limiter, error) {
+	if l == nil {
+		return nil, errors.New("lifecycle is nil")
+	}
+	limiter, ok := l.attemptLimiters[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrAttemptInstanceNotFound, name)
+	}
+	return limiter, nil
+}
+
+// AttemptNames returns a sorted copy of the registered attempt limiter names.
+// A nil lifecycle or an empty registry returns nil. Concurrent calls are safe.
+func (l *Lifecycle) AttemptNames() []string {
+	if l == nil || len(l.attemptLimiters) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(l.attemptLimiters))
+	for name := range l.attemptLimiters {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -401,6 +456,95 @@ func newLifecycleAuth(configs map[string]auth.Config, client redis.UniversalClie
 		managers[name] = manager
 	}
 	return managers, nil
+}
+
+// Decode each attempt instance independently so malformed fields cannot expose
+// HMAC keys in mapstructure's detailed conversion errors.
+func decodeLifecycleAttempt(config *coreconfig.Config) (map[string]attempt.Config, error) {
+	raw := coreconfig.Get[any](config, "attempt")
+	if raw == nil {
+		return nil, nil
+	}
+	instances, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("initialize attempt: %w: expected a map of named instances", attempt.ErrInvalidConfig)
+	}
+	names := make([]string, 0, len(instances))
+	for name := range instances {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	configs := make(map[string]attempt.Config, len(instances))
+	for _, name := range names {
+		if !validAttemptInstanceName(name) {
+			return nil, fmt.Errorf("initialize attempt %q: %w: name must match [a-z][a-z0-9_-]{0,63}", name, attempt.ErrInvalidConfig)
+		}
+		fields, ok := instances[name].(map[string]any)
+		if !ok || len(fields) == 0 {
+			return nil, fmt.Errorf("initialize attempt %q: %w: expected a non-empty configuration map", name, attempt.ErrInvalidConfig)
+		}
+		var cfg attempt.Config
+		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			Result:      &cfg,
+			TagName:     "mapstructure",
+			ErrorUnused: true,
+			DecodeHook:  mapstructure.StringToTimeDurationHookFunc(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize attempt %q: %w", name, err)
+		}
+		if err := decoder.Decode(fields); err != nil {
+			return nil, fmt.Errorf("initialize attempt %q: %w: invalid configuration fields or types", name, attempt.ErrInvalidConfig)
+		}
+		configs[name] = cfg
+	}
+	return configs, nil
+}
+
+func validAttemptInstanceName(name string) bool {
+	if len(name) == 0 || len(name) > 64 || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func newLifecycleAttempt(configs map[string]attempt.Config, client redis.UniversalClient) (map[string]*attempt.Limiter, error) {
+	if len(configs) == 0 {
+		return nil, nil
+	}
+	if client == nil {
+		return nil, errors.New("initialize attempt: redis must be configured")
+	}
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	limiters := make(map[string]*attempt.Limiter, len(configs))
+	prefixOwners := make(map[string]string, len(configs))
+	for _, name := range names {
+		cfg := configs[name]
+		cfg.KeyPrefix = strings.TrimSpace(cfg.KeyPrefix)
+		if cfg.KeyPrefix == "" {
+			cfg.KeyPrefix = "aurora:auth:attempt:{" + name + "}"
+		}
+		if owner, exists := prefixOwners[cfg.KeyPrefix]; exists {
+			return nil, fmt.Errorf("initialize attempt %q: %w: key_prefix conflicts with instance %q", name, attempt.ErrInvalidConfig, owner)
+		}
+		limiter, err := attempt.New(client, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("initialize attempt %q: %w", name, err)
+		}
+		prefixOwners[cfg.KeyPrefix] = name
+		limiters[name] = limiter
+	}
+	return limiters, nil
 }
 
 // Run starts the HTTP server and releases all lifecycle-owned resources when
@@ -914,6 +1058,24 @@ logger:
 #     access_ttl: 30m
 #     refresh_ttl: 168h
 #     max_session_ttl: 720h
+
+# Optional attempt limiter configuration. Uncomment the whole block to enable
+# login failure tracking and account lockout. Requires Redis to be configured.
+# attempt:
+#   admin:
+#     key_prefix: aurora:auth:attempt:{admin}
+#     hmac_key: "replace-with-at-least-32-random-bytes"
+#     failure_limit: 5
+#     window: 10m
+#     lock_duration: 15m
+#     attempt_ttl: 10m
+#   user:
+#     key_prefix: aurora:auth:attempt:{user}
+#     hmac_key: "replace-with-a-different-32-byte-random-secret"
+#     failure_limit: 3
+#     window: 5m
+#     lock_duration: 10m
+#     attempt_ttl: 5m
 
 # Optional MQ configuration. Uncomment the whole block to enable one adapter.
 # mq:

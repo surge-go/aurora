@@ -35,7 +35,8 @@
 
 - 不校验用户名、密码、短信验证码或 OAuth provider 凭证。
 - 不查询用户表、角色、权限、菜单或账号锁定状态。
-- 不负责 IP 登录限流、密码错误计数或业务账号锁定。
+- 不负责 IP 登录限流、密码错误计数或业务账号锁定；账号级失败计数和临时锁定由
+  `core/auth/attempt` 子包提供。
 - 不实现 Gin/Aurora middleware；HTTP 适配器另行设计。
 - 不提供内存 store；Redis 是 session 和 refresh 状态的唯一存储。
 - 不把角色权限默认写入 token；权限变化不应依赖等待 JWT 过期。
@@ -54,22 +55,35 @@ core/auth/
   token.go        # jwt/v5 parser、signer 和 claims 校验
   redis.go        # Redis key、Lua 脚本和状态操作
   errors.go       # 包级 sentinel errors
+  attempt/        # 登录失败计数、临时锁定和人工解锁
   *_test.go
 ```
 
 依赖方向：
 
 ```text
-application bootstrap
+application bootstrap (aurora.Lifecycle)
         |
-        v
-core/auth.Manager ----> jwt/v5
-        |
-        +----> go-redis UniversalClient
-                         ^
-                         |
-                  core/redis.NewClient
+        +----> core/auth.Manager ----> jwt/v5
+        |               |
+        |               +----> go-redis UniversalClient
+        |                               ^
+        |                               |
+        +----> core/auth/attempt.Limiter ----+
+                                             |
+                                   core/redis.NewClient
 ```
+
+`core/auth/attempt` 是认证包的可选子包，提供账号级登录失败计数和临时锁定功能。
+它与 `core/auth.Manager` 在 `aurora.Lifecycle` 中独立配置和初始化，两者共享同一个
+Redis 客户端但使用不同的 `key_prefix` 避免键冲突。
+
+典型用法：
+- 通过 `lifecycle.Auth("admin")` 和 `lifecycle.Attempt("admin")` 获取对应实例。
+- 登录流程在密码验证前调用 `attempt.Begin()` 检查锁定状态。
+- 密码验证失败时调用 `attempt.RecordFailure()`，成功时调用 `attempt.RecordSuccess()`。
+- 管理员可通过 `attempt.Unlock()` 提前解除锁定状态。
+
 
 `core/auth` 不创建、不关闭 Redis 客户端。应用组合根使用 `core/redis` 创建客户端，再注入
 `auth.New`；认证包只负责使用 Redis 保存和清理自身 key。这样不需要额外维护内存 token
@@ -430,8 +444,8 @@ token 签发通过 `IssueRequest.IdempotencyKey` 支持短期幂等回放，默�
 应在同一次 token 签发操作的网络重试中复用，新的主动签发必须生成新键。
 
 登录互斥策略只管理成功登录后的 session 数量和平台冲突，不等价于登录保护。IP 请求速率、
-密码失败计数、验证码和账号锁定属于登录入口或业务认证服务职责，可由独立 limiter 实现，
-不写入 `core/auth` 的 session 策略。
+密码失败计数、验证码和账号锁定属于登录入口或业务认证服务职责。账号级失败计数、临时锁定和
+人工解锁可使用 `core/auth/attempt`，但不写入 `core/auth` 的 session 策略；IP 限流仍由 HTTP 层实现。
 
 ## 8. 错误契约
 

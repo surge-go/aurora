@@ -12,6 +12,10 @@ const defaultStatus = http.StatusInternalServerError
 // under the requested name. It is a bootstrap error, not an HTTP response error.
 var ErrAuthInstanceNotFound = errors.New("auth instance not found")
 
+// ErrAttemptInstanceNotFound indicates that no attempt limiter is registered
+// under the requested name. It is a bootstrap error, not an HTTP response error.
+var ErrAttemptInstanceNotFound = errors.New("attempt instance not found")
+
 var (
 	// ErrInternal 表示服务器内部错误。
 	ErrInternal = NewWithStatus(1000, http.StatusInternalServerError, "服务发生异常")
