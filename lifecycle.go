@@ -323,7 +323,7 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		return nil, fmt.Errorf("initialize Aurora engine: %w", err)
 	}
 
-	return &Lifecycle{
+	lifecycle := &Lifecycle{
 		Engine:          engine,
 		Config:          managedConfig,
 		Logger:          log,
@@ -336,7 +336,100 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		rateLimiters:    rateLimiters,
 		MQPublisher:     publisher,
 		MQConsumer:      consumer,
-	}, nil
+	}
+
+	// 打印启动信息
+	lifecycle.logLifecycleStartup(&settings.Aurora)
+
+	return lifecycle, nil
+}
+
+// logLifecycleStartup 打印生命周期启动信息
+func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
+	if l == nil || l.Logger == nil {
+		return
+	}
+
+	// 收集启用的资源
+	var resources []string
+	if l.Database != nil {
+		resources = append(resources, "Database")
+	}
+	if l.Redis != nil {
+		resources = append(resources, "Redis")
+	}
+	if l.Tracing != nil {
+		resources = append(resources, "Tracing")
+	}
+	if l.Metrics != nil {
+		resources = append(resources, "Metrics")
+	}
+	if l.MQPublisher != nil || l.MQConsumer != nil {
+		resources = append(resources, "MessageQueue")
+	}
+
+	// 收集认证实例
+	var authInstances []string
+	if len(l.authManagers) > 0 {
+		authInstances = l.AuthNames()
+	}
+
+	// 收集失败计数器实例
+	var attemptInstances []string
+	if len(l.attemptLimiters) > 0 {
+		attemptInstances = l.AttemptNames()
+	}
+
+	// 收集限流器实例
+	var rateLimitInstances []string
+	if len(l.rateLimiters) > 0 {
+		rateLimitInstances = l.RateLimitNames()
+	}
+
+	// 收集启用的中间件
+	var middlewares []string
+	if cfg.Middleware.RequestID {
+		middlewares = append(middlewares, "RequestID")
+	}
+	if cfg.Middleware.Recovery {
+		middlewares = append(middlewares, "Recovery")
+	}
+	if cfg.Middleware.AccessLog {
+		middlewares = append(middlewares, "AccessLog")
+	}
+	if cfg.Middleware.Tracing {
+		middlewares = append(middlewares, "Tracing")
+	}
+	if cfg.Middleware.Metrics {
+		middlewares = append(middlewares, "Metrics")
+	}
+
+	// 打印启动信息
+	l.Logger.Info("[Aurora] 生命周期初始化完成",
+		logger.String("version", version),
+		logger.String("addr", cfg.Addr),
+		logger.String("mode", cfg.Mode),
+	)
+
+	if len(resources) > 0 {
+		l.Logger.Info("[Aurora] 启用的资源", logger.Any("resources", resources))
+	}
+
+	if len(authInstances) > 0 {
+		l.Logger.Info("[Aurora] Auth 实例", logger.Any("instances", authInstances))
+	}
+
+	if len(attemptInstances) > 0 {
+		l.Logger.Info("[Aurora] Attempt 实例", logger.Any("instances", attemptInstances))
+	}
+
+	if len(rateLimitInstances) > 0 {
+		l.Logger.Info("[Aurora] RateLimit 实例", logger.Any("instances", rateLimitInstances))
+	}
+
+	if len(middlewares) > 0 {
+		l.Logger.Info("[Aurora] 启用的中间件", logger.Any("middlewares", middlewares))
+	}
 }
 
 // Auth returns the named authentication manager. Names are matched exactly;
