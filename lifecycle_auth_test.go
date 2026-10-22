@@ -107,14 +107,14 @@ func TestLifecycleAuthConfigurationNames(t *testing.T) {
 }
 
 func TestLifecycleAuthGeneratedTemplate(t *testing.T) {
-	_, block, found := strings.Cut(defaultLifecycleYAML, "# auth:\n")
+	_, block, found := strings.Cut(defaultLifecycleYAML, "#auth:\n")
 	require.True(t, found)
 	block, _, found = strings.Cut(block, "\n\n")
 	require.True(t, found)
 	config := "auth:\n"
 	for line := range strings.SplitSeq(block, "\n") {
-		require.True(t, strings.HasPrefix(line, "# "))
-		config += strings.TrimPrefix(line, "# ") + "\n"
+		require.True(t, strings.HasPrefix(line, "#"))
+		config += strings.TrimPrefix(line, "#") + "\n"
 	}
 	mr := miniredis.RunT(t)
 	lifecycle, err := NewLifecycle(writeLifecycleAuthConfig(t, mr.Addr(), config))

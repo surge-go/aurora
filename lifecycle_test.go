@@ -40,7 +40,7 @@ func TestNewLifecycleGeneratesDefaultConfig(t *testing.T) {
 			t.Fatalf("default config is missing %q section", section)
 		}
 	}
-	for _, section := range []string{"# tracing:\n", "# metrics:\n", "# database:\n", "# redis:\n", "# auth:\n", "# mq:\n", "#   rabbitmq:\n", "#   kafka:\n"} {
+	for _, section := range []string{"#tracing:\n", "#metrics:\n", "#database:\n", "#redis:\n", "#auth:\n", "#mq:\n", "#  rabbitmq:\n", "#  kafka:\n"} {
 		if !strings.Contains(string(data), "\n"+section) {
 			t.Fatalf("default config is missing %q section", strings.TrimSpace(section))
 		}

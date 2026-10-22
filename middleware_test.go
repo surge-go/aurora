@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/surge-go/aurora/core/logger"
-	corelogger "github.com/surge-go/aurora/core/logger"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -15,7 +14,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	oteltrace "go.opentelemetry.io/otel/trace"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,10 +50,10 @@ func TestFormatAccessLogOmitsEmptyTraceID(t *testing.T) {
 
 func TestAccessLogMiddlewareUsesProjectLogger(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "access.log")
-	log, err := corelogger.New(&corelogger.Config{
-		Output:          corelogger.OutputFile,
+	log, err := logger.New(&logger.Config{
+		Output:          logger.OutputFile,
 		File:            logPath,
-		StacktraceLevel: corelogger.StacktraceLevelNone,
+		StacktraceLevel: logger.StacktraceLevelNone,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +550,7 @@ func newTestTracingRuntime(tp *sdktrace.TracerProvider) TracingRuntime {
 	}
 }
 
-func (t *testTracingRuntime) TracerProvider() oteltrace.TracerProvider {
+func (t *testTracingRuntime) TracerProvider() trace.TracerProvider {
 	return t.tp
 }
 

@@ -211,7 +211,7 @@ func TestLifecycleAttemptStateIsolation(t *testing.T) {
 			require.False(t, userStatus.Locked)
 			require.Equal(t, 0, userStatus.FailureCount)
 			// Admin state should remain unchanged after reset
-			adminTry, adminStatus, err = admin.Begin(ctx, accountID)
+			_, adminStatus, err = admin.Begin(ctx, accountID)
 			require.NoError(t, err)
 			require.False(t, adminStatus.Locked)
 			require.Equal(t, 0, adminStatus.FailureCount)
