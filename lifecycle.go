@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/go-viper/mapstructure/v2"
-	redis "github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9"
 	"github.com/surge-go/aurora/core/auth"
 	"github.com/surge-go/aurora/core/auth/attempt"
 	coreconfig "github.com/surge-go/aurora/core/config"
@@ -907,8 +907,11 @@ func (l *Lifecycle) endRun(cancel context.CancelFunc) chan struct{} {
 }
 
 func (l *Lifecycle) closeAfterRun() error {
+	if l == nil {
+		return errors.New("lifecycle is nil")
+	}
 	ctx := context.Background()
-	if l != nil && l.Engine != nil && l.config.WriteTimeout > 0 {
+	if l.Engine != nil && l.config.WriteTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, l.config.WriteTimeout)
 		defer cancel()
