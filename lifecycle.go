@@ -1079,18 +1079,6 @@ aurora:
     tracing: false                 # 链路追踪中间件（需启用 tracing 配置）
     metrics: false                 # 指标采集中间件（需启用 metrics 配置）
 
-# 可选的 middleware 包中间件配置。取消注释需要的中间件块以启用。
-#middleware:
-#  auth:                          # 认证中间件（需启用 auth 配置）
-#    enabled: false               # 是否启用认证中间件
-#    instance: ""                 # 使用的 auth 实例名称（如 "admin"）
-#    skip_paths: []               # 跳过认证的路径列表
-#  ratelimit:                     # IP 限流中间件（需启用 ratelimit 配置）
-#    enabled: false               # 是否启用限流中间件
-#    instance: ""                 # 使用的 ratelimit 实例名称（如 "api"）
-#    skip_paths: []               # 跳过限流的路径列表
-#    key_func: ""                 # 限流键提取函数: client_ip（默认）, custom
-
 # 可选的链路追踪配置。取消注释整个块以启用。
 #tracing:
 #  service_name: aurora           # 服务名称
