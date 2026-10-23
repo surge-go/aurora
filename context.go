@@ -456,6 +456,14 @@ func (c *Context) Writer() gin.ResponseWriter {
 	return c.ctx.Writer
 }
 
+// SetWriter 设置 ResponseWriter（用于中间件如 Gzip 替换 Writer）。
+func (c *Context) SetWriter(w gin.ResponseWriter) {
+	if c == nil || c.ctx == nil {
+		return
+	}
+	c.ctx.Writer = w
+}
+
 // ============================================================================
 // 错误处理
 // ============================================================================
