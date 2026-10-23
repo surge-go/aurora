@@ -346,9 +346,12 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 
 // logLifecycleStartup 打印生命周期启动信息
 func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
-	if l == nil || l.Logger == nil {
+	if l == nil {
 		return
 	}
+
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "[Aurora] 生命周期初始化完成 | %s | %s | v%s\n", cfg.Addr, cfg.Mode, version)
 
 	// 收集启用的资源
 	var resources []string
@@ -368,22 +371,26 @@ func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
 		resources = append(resources, "MessageQueue")
 	}
 
+	if len(resources) > 0 {
+		fmt.Fprintf(&buf, "[Aurora] 启用的资源: %s\n", strings.Join(resources, ", "))
+	}
+
 	// 收集认证实例
-	var authInstances []string
 	if len(l.authManagers) > 0 {
-		authInstances = l.AuthNames()
+		authInstances := l.AuthNames()
+		fmt.Fprintf(&buf, "[Aurora] Auth 实例: %s\n", strings.Join(authInstances, ", "))
 	}
 
 	// 收集失败计数器实例
-	var attemptInstances []string
 	if len(l.attemptLimiters) > 0 {
-		attemptInstances = l.AttemptNames()
+		attemptInstances := l.AttemptNames()
+		fmt.Fprintf(&buf, "[Aurora] Attempt 实例: %s\n", strings.Join(attemptInstances, ", "))
 	}
 
 	// 收集限流器实例
-	var rateLimitInstances []string
 	if len(l.rateLimiters) > 0 {
-		rateLimitInstances = l.RateLimitNames()
+		rateLimitInstances := l.RateLimitNames()
+		fmt.Fprintf(&buf, "[Aurora] RateLimit 实例: %s\n", strings.Join(rateLimitInstances, ", "))
 	}
 
 	// 收集启用的中间件
@@ -404,32 +411,11 @@ func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
 		middlewares = append(middlewares, "Metrics")
 	}
 
-	// 打印启动信息
-	l.Logger.Info("[Aurora] 生命周期初始化完成",
-		logger.String("version", version),
-		logger.String("addr", cfg.Addr),
-		logger.String("mode", cfg.Mode),
-	)
-
-	if len(resources) > 0 {
-		l.Logger.Info("[Aurora] 启用的资源", logger.Any("resources", resources))
-	}
-
-	if len(authInstances) > 0 {
-		l.Logger.Info("[Aurora] Auth 实例", logger.Any("instances", authInstances))
-	}
-
-	if len(attemptInstances) > 0 {
-		l.Logger.Info("[Aurora] Attempt 实例", logger.Any("instances", attemptInstances))
-	}
-
-	if len(rateLimitInstances) > 0 {
-		l.Logger.Info("[Aurora] RateLimit 实例", logger.Any("instances", rateLimitInstances))
-	}
-
 	if len(middlewares) > 0 {
-		l.Logger.Info("[Aurora] 启用的中间件", logger.Any("middlewares", middlewares))
+		fmt.Fprintf(&buf, "[Aurora] 启用的中间件: %s\n", strings.Join(middlewares, ", "))
 	}
+
+	fmt.Fprint(os.Stdout, buf.String())
 }
 
 // Auth returns the named authentication manager. Names are matched exactly;
