@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 var (
@@ -76,7 +77,7 @@ func New(ctx context.Context, cfg *Config, opts ...Option) (*Runtime, error) {
 	propagator := newPropagator()
 	if !config.Enabled {
 		return &Runtime{
-			provider:   trace.NewNoopTracerProvider(),
+			provider:   noop.NewTracerProvider(),
 			propagator: propagator,
 			shutdown:   func(context.Context) error { return nil },
 		}, nil
@@ -113,7 +114,7 @@ func New(ctx context.Context, cfg *Config, opts ...Option) (*Runtime, error) {
 // TracerProvider returns the runtime's provider for explicit instrumentation injection.
 func (r *Runtime) TracerProvider() trace.TracerProvider {
 	if r == nil || r.provider == nil {
-		return trace.NewNoopTracerProvider()
+		return noop.NewTracerProvider()
 	}
 	return r.provider
 }
