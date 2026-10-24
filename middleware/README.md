@@ -13,14 +13,15 @@ Aurora 框架的官方中间件集合，提供常用的 HTTP 中间件功能。
 
 ## 📦 可用中间件
 
-| 中间件 | 说明 | 文档 |
-|--------|------|------|
-| **Auth** | JWT 认证，自动刷新令牌 | [AUTH.md](./AUTH.md) |
-| **RateLimit** | 基于 IP 的限流保护 | [RATELIMIT.md](./RATELIMIT.md) |
-| **CORS** | 跨域资源共享配置 | [CORS.md](./CORS.md) |
-| **Gzip** | 响应压缩，减少传输数据 70-90% | [GZIP.md](./GZIP.md) |
-| **Security** | 安全响应头（HSTS、CSP、XFO 等） | [SECURITY.md](./SECURITY.md) |
-| **BodyLimit** | 请求体大小限制，防止资源耗尽 | [BODYLIMIT.md](./BODYLIMIT.md) |
+| 中间件 | 说明 |
+|--------|------|
+| **Auth** | JWT 认证，自动刷新令牌，支持路径白名单 |
+| **IPFilter** | IP 白名单/黑名单，支持 CIDR 段过滤，支持动态更新 |
+| **RateLimit** | 基于 IP 的限流保护 |
+| **CORS** | 跨域资源共享配置 |
+| **Gzip** | 响应压缩，减少传输数据 70-90% |
+| **Security** | 安全响应头（HSTS、CSP、XFO 等） |
+| **BodyLimit** | 请求体大小限制，防止资源耗尽 |
 
 ## 🚀 快速开始
 
@@ -37,6 +38,7 @@ go get -u github.com/surge-go/aurora
 - ✅ Gzip
 - ✅ Security
 - ✅ BodyLimit
+- ✅ IPFilter
 
 部分中间件依赖 Aurora 核心组件和 Redis：
 - **Auth**: 依赖 `aurora/core/auth` 和 Redis（用于 token 存储和轮换）
@@ -93,21 +95,24 @@ engine.Use(middleware.Security(middleware.DefaultSecurityConfig()))
 // 4. CORS - 处理跨域请求
 engine.Use(middleware.CORS(middleware.DefaultCORSConfig()))
 
-// 5. 认证 - 验证请求身份（如果需要）
+// 5. IP 过滤 - IP 白名单/黑名单（如果需要）
+// engine.Use(middleware.IPFilter(middleware.IPFilterConfig{...}))
+
+// 6. 认证 - 验证请求身份（如果需要）
 // authManager := coreauth.NewManager(...)
 // engine.Use(middleware.Auth(authManager))
 
-// 6. 限流 - 防止滥用（如果需要）
+// 7. 限流 - 防止滥用（如果需要）
 // limiter, _ := ratelimit.New(redisClient, ratelimit.Config{...})
 // engine.Use(middleware.IPRateLimiter(limiter))
 
-// 7. Body Limit - 限制请求体大小（在解析前）
+// 8. Body Limit - 限制请求体大小（在解析前）
 engine.Use(middleware.BodyLimit(middleware.DefaultBodyLimitConfig()))
 
-// 8. Gzip - 压缩响应（在业务逻辑后）
+// 9. Gzip - 压缩响应（在业务逻辑后）
 engine.Use(middleware.Gzip(middleware.DefaultGzipConfig()))
 
-// 9. 业务路由
+// 10. 业务路由
 engine.GET("/api/data", dataHandler)
 ```
 
@@ -115,12 +120,13 @@ engine.GET("/api/data", dataHandler)
 
 ### Auth JWT 认证
 
-基于 JWT 的请求认证中间件，支持自动令牌刷新和主动刷新策略。
+基于 JWT 的请求认证中间件，支持自动令牌刷新、主动刷新策略和路径白名单。
 
 **特性**:
 - ✅ Bearer Token 验证
 - ✅ 自动令牌刷新（Access Token 过期时）
 - ✅ 主动刷新策略（临近过期时提前刷新）
+- ✅ 路径白名单（跳过认证）
 - ✅ 单次刷新并发控制（singleflight）
 - ✅ 灵活的配置选项
 
@@ -137,9 +143,20 @@ authManager, err := coreauth.NewManager(&coreauth.Config{
 // 使用默认配置
 engine.Use(middleware.Auth(authManager))
 
+// 带路径白名单
+engine.Use(middleware.Auth(authManager,
+    middleware.WithSkipPaths(
+        "/health",           // 健康检查
+        "/metrics",          // 监控指标
+        "/public/*",         // 公共资源（通配符）
+        "/api/v1/login",     // 登录接口
+    ),
+))
+
 // 主动刷新配置（临近过期前 5 分钟自动刷新）
 engine.Use(middleware.Auth(authManager,
     middleware.WithPreRefreshWindow(5 * time.Minute),
+    middleware.WithSkipPaths("/health", "/api/v1/login"),
 ))
 
 // 在处理器中获取 claims
@@ -159,7 +176,147 @@ engine.GET("/profile", func(c *aurora.Context) {
 
 **适用场景**: API 认证、用户身份验证、权限控制
 
-[📖 完整文档](./AUTH.md)
+**白名单说明**:
+- 精确匹配: `/health`, `/api/v1/login`
+- 通配符: `/public/*` 匹配 `/public/` 下所有路径
+
+---
+
+### IPFilter IP 白名单/黑名单
+
+基于 IP 地址的访问控制中间件，支持白名单、黑名单和 CIDR 段过滤。
+
+**特性**:
+- ✅ IP 白名单（只允许特定 IP 访问）
+- ✅ IP 黑名单（阻止特定 IP 访问）
+- ✅ CIDR 段支持（如 `192.168.0.0/16`）
+- ✅ 路径跳过（特定路径可跳过 IP 检查）
+- ✅ 代理支持（X-Forwarded-For / X-Real-IP）
+- ✅ IPv6 完整支持
+- ✅ 自定义拒绝响应
+
+```go
+// 白名单模式（只允许内网访问）
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    AllowList: []string{
+        "192.168.0.0/16",       // 内网 A
+        "10.0.0.0/8",           // 内网 B
+        "172.16.0.0/12",        // 内网 C
+    },
+    SkipPaths: []string{"/health"}, // 健康检查例外
+}))
+
+// 黑名单模式（封禁恶意 IP）
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    BlockList: []string{
+        "203.0.113.0/24",       // 封禁整个段
+        "198.51.100.50",        // 封禁单个 IP
+    },
+}))
+
+// 混合模式（允许内网，但排除特定 IP）
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    AllowList: []string{"192.168.0.0/16"},
+    BlockList: []string{"192.168.1.100"}, // 黑名单优先
+}))
+
+// 配合负载均衡器使用
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    BlockList: []string{"203.0.113.0/24"},
+    TrustedProxies: []string{"10.0.0.1", "10.0.0.2"}, // 负载均衡器
+}))
+
+// 自定义拒绝响应
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    AllowList: []string{"192.168.0.0/16"},
+    OnRejected: func(c *aurora.Context, ip string) {
+        c.JSON(403, map[string]string{
+            "error": "forbidden",
+            "message": fmt.Sprintf("IP %s is not allowed", ip),
+        })
+    },
+}))
+```
+
+**CIDR 支持示例**:
+```go
+"10.0.0.0/8"          // 10.0.0.0 - 10.255.255.255 (1600万+ IP)
+"172.16.0.0/12"       // 172.16.0.0 - 172.31.255.255 (100万+ IP)
+"192.168.0.0/16"      // 192.168.0.0 - 192.168.255.255 (65536 IP)
+"192.168.1.0/24"      // 192.168.1.0 - 192.168.1.255 (256 IP)
+"2001:db8::/32"       // IPv6 段
+```
+
+**适用场景**: 内网服务保护、防御攻击、地域限制、访问控制
+
+#### 动态更新 IP 规则
+
+IPFilter 支持运行时动态修改白名单/黑名单，适用于实时封禁攻击 IP 的场景。
+
+```go
+// 创建 Controller 用于运行时控制
+ctrl := &middleware.IPFilterController{}
+
+engine.Use(middleware.IPFilter(
+    middleware.IPFilterConfig{
+        AllowList: []string{"10.0.0.0/8"},
+    },
+    middleware.WithController(ctrl), // 注入 controller
+))
+
+// 运行时动态封禁攻击 IP
+func blockAttacker(ip string) {
+    if err := ctrl.AddToBlockList(ip); err != nil {
+        log.Error("failed to block IP:", err)
+        return
+    }
+    log.Info("blocked IP:", ip)
+}
+
+// 从 Redis 同步黑名单（定时任务）
+go func() {
+    ticker := time.NewTicker(10 * time.Second)
+    for range ticker.C {
+        blockedIPs := loadFromRedis("security:blocked_ips")
+        ctrl.SetBlockList(blockedIPs)
+    }
+}()
+
+// 提供管理接口
+adminAPI.POST("/security/block-ip", func(c *aurora.Context) {
+    var req struct {
+        IP string `json:"ip"`
+    }
+    if err := c.BindJSON(&req); err != nil {
+        c.Fail(aurora.ErrBadRequest)
+        return
+    }
+    
+    if err := ctrl.AddToBlockList(req.IP); err != nil {
+        c.Fail(aurora.ErrInternal)
+        return
+    }
+    
+    c.OK(map[string]any{"blocked": req.IP})
+})
+```
+
+**Controller API**:
+```go
+// 黑名单操作
+ctrl.AddToBlockList("1.2.3.4", "5.6.7.8")       // 添加到黑名单
+ctrl.RemoveFromBlockList("1.2.3.4")             // 从黑名单移除
+ctrl.SetBlockList([]string{"1.2.3.4"})          // 替换整个黑名单
+ctrl.GetBlockList()                              // 获取当前黑名单
+
+// 白名单操作
+ctrl.AddToAllowList("10.0.0.0/8")               // 添加到白名单
+ctrl.RemoveFromAllowList("10.0.0.0/8")          // 从白名单移除
+ctrl.SetAllowList([]string{"10.0.0.0/8"})       // 替换整个白名单
+ctrl.GetAllowList()                              // 获取当前白名单
+```
+
+**线程安全保证**: 所有 Controller 方法都是并发安全的，可以在多个 goroutine 中同时调用。
 
 ---
 
@@ -373,9 +530,17 @@ config := middleware.GzipConfig{
 }
 engine.Use(middleware.Gzip(config))
 
+// IPFilter 使用配置结构体
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    AllowList: []string{"192.168.0.0/16"},
+    BlockList: []string{"192.168.1.100"},
+    SkipPaths: []string{"/health"},
+}))
+
 // Auth 中间件使用选项模式
 engine.Use(middleware.Auth(authManager,
     middleware.WithPreRefreshWindow(5 * time.Minute),
+    middleware.WithSkipPaths("/health", "/login"),
     middleware.WithClaimsKey("custom.claims.key"),
 ))
 
@@ -491,7 +656,64 @@ engine.POST("/auth/register",
 )
 ```
 
-### 场景 3: 标准 API 服务（无认证）
+### 场景 3: 内网 API（IP 白名单保护）
+
+```go
+engine := aurora.New()
+
+// IP 白名单：只允许内网访问
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    AllowList: []string{
+        "10.0.0.0/8",           // 内网 A
+        "172.16.0.0/12",        // 内网 B
+        "192.168.0.0/16",       // 内网 C
+    },
+    SkipPaths: []string{"/health"}, // 健康检查例外
+}))
+
+// 核心中间件
+engine.Use(middleware.Security(middleware.DefaultSecurityConfig()))
+engine.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
+    Limit: 1 * 1024 * 1024, // API 限制 1MB
+}))
+engine.Use(middleware.Gzip(middleware.GzipConfig{
+    Level:     gzip.BestSpeed, // 快速压缩
+    MinLength: 1024,
+}))
+
+// 业务路由
+api := engine.Group("/api/v1")
+api.POST("/users", createUser)
+api.GET("/users/:id", getUser)
+```
+
+### 场景 4: 防御攻击（IP 黑名单）
+
+```go
+engine := aurora.New()
+
+// IP 黑名单：封禁恶意 IP 段
+engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
+    BlockList: []string{
+        "203.0.113.0/24",       // 恶意 IP 段
+        "198.51.100.50",        // 特定攻击者
+    },
+    TrustedProxies: []string{"10.0.0.1"}, // 负载均衡器
+}))
+
+// 全局限流
+globalLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
+    Limit:  100,
+    Window: time.Minute,
+})
+engine.Use(middleware.IPRateLimiter(globalLimiter))
+
+// 业务路由
+api := engine.Group("/api")
+api.GET("/data", getData)
+```
+
+### 场景 5: 标准 API 服务（无 IP 限制）
 
 ```go
 engine := aurora.New()
@@ -512,7 +734,7 @@ api.POST("/users", createUser)
 api.GET("/users/:id", getUser)
 ```
 
-### 场景 4: 文件上传服务
+### 场景 6: 文件上传服务
 
 ```go
 engine := aurora.New()
