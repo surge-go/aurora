@@ -26,6 +26,7 @@ type options struct {
 	refreshTokenHeader         string
 	accessTokenResponseHeader  string
 	refreshTokenResponseHeader string
+	skipPaths                  []string
 }
 
 const (
@@ -86,6 +87,18 @@ func WithTokenResponseHeaders(accessHeader, refreshHeader string) Option {
 	}
 }
 
+// WithSkipPaths 配置跳过认证的路径白名单。
+// 支持精确匹配和前缀匹配（以 * 结尾），例如：
+//   - "/health" 精确匹配
+//   - "/public/*" 匹配所有以 /public/ 开头的路径
+func WithSkipPaths(paths ...string) Option {
+	return func(opts *options) {
+		if len(paths) > 0 {
+			opts.skipPaths = append(opts.skipPaths, paths...)
+		}
+	}
+}
+
 // AuthMiddleware 校验 Bearer access token，并将 claims 存入 Aurora 请求上下文。
 // 它不会主动加载用户或权限信息；Handler 应使用 claims 中的 subject
 // 完成当前业务相关的校验。
@@ -107,6 +120,12 @@ func AuthMiddleware(manager *coreauth.Manager, opts ...Option) aurora.Middleware
 	return func(c *aurora.Context) {
 		if manager == nil {
 			c.Fail(aurora.ErrServiceUnavailable.WithErr(errors.New("auth manager is nil")))
+			return
+		}
+
+		// 检查当前路径是否在白名单中
+		if shouldSkipAuth(c.Request().URL.Path, config.skipPaths) {
+			c.Next()
 			return
 		}
 
@@ -243,4 +262,25 @@ func bearerToken(header string) (string, bool) {
 		return "", false
 	}
 	return parts[1], true
+}
+
+// shouldSkipAuth 检查给定路径是否匹配白名单中的任何规则。
+func shouldSkipAuth(path string, skipPaths []string) bool {
+	for _, pattern := range skipPaths {
+		if pattern == "" {
+			continue
+		}
+		// 支持前缀匹配（以 * 结尾）
+		if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+			continue
+		}
+		// 精确匹配
+		if path == pattern {
+			return true
+		}
+	}
+	return false
 }

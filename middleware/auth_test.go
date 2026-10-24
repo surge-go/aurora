@@ -301,3 +301,162 @@ func TestAuthMiddlewareRejectsReplayedRefreshToken(t *testing.T) {
 	engine.ServeHTTP(resp, req)
 	require.Equal(t, 401, resp.Code)
 }
+
+func TestAuthMiddlewareSkipPaths(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := coreauth.DefaultConfig()
+	cfg.Issuer = "test"
+	cfg.Audience = []string{"client"}
+	cfg.MaxSessionTTL = time.Hour
+	manager, err := coreauth.New(rdb, cfg, coreauth.WithSigningSecret(bytes.Repeat([]byte("k"), 32)))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name           string
+		skipPaths      []string
+		requestPath    string
+		withAuthHeader bool
+		wantStatus     int
+	}{
+		{
+			name:           "exact match skips auth",
+			skipPaths:      []string{"/health", "/metrics"},
+			requestPath:    "/health",
+			withAuthHeader: false,
+			wantStatus:     200,
+		},
+		{
+			name:           "no match requires auth",
+			skipPaths:      []string{"/health"},
+			requestPath:    "/private",
+			withAuthHeader: false,
+			wantStatus:     401,
+		},
+		{
+			name:           "prefix wildcard matches",
+			skipPaths:      []string{"/public/*"},
+			requestPath:    "/public/images/logo.png",
+			withAuthHeader: false,
+			wantStatus:     200,
+		},
+		{
+			name:           "prefix wildcard no match",
+			skipPaths:      []string{"/public/*"},
+			requestPath:    "/private/data",
+			withAuthHeader: false,
+			wantStatus:     401,
+		},
+		{
+			name:           "mixed patterns",
+			skipPaths:      []string{"/health", "/public/*", "/docs/*"},
+			requestPath:    "/docs/api.html",
+			withAuthHeader: false,
+			wantStatus:     200,
+		},
+		{
+			name:           "empty pattern ignored",
+			skipPaths:      []string{"", "/health"},
+			requestPath:    "/health",
+			withAuthHeader: false,
+			wantStatus:     200,
+		},
+		{
+			name:           "nested path with wildcard",
+			skipPaths:      []string{"/api/v1/public/*"},
+			requestPath:    "/api/v1/public/login",
+			withAuthHeader: false,
+			wantStatus:     200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, err := aurora.New(aurora.DefaultConfig())
+			require.NoError(t, err)
+			engine.Use(AuthMiddleware(manager, WithSkipPaths(tt.skipPaths...)))
+			engine.GET("/*path", func(c *aurora.Context) { c.OK(nil) })
+
+			req := httptest.NewRequest("GET", tt.requestPath, nil)
+			if tt.withAuthHeader {
+				pair, err := manager.Issue(t.Context(), coreauth.IssueRequest{Principal: coreauth.Principal{Subject: "test-user"}})
+				require.NoError(t, err)
+				req.Header.Set("Authorization", "Bearer "+pair.AccessToken)
+			}
+			resp := httptest.NewRecorder()
+			engine.ServeHTTP(resp, req)
+			require.Equal(t, tt.wantStatus, resp.Code)
+		})
+	}
+}
+
+func TestShouldSkipAuth(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		skipPaths []string
+		want      bool
+	}{
+		{
+			name:      "exact match",
+			path:      "/health",
+			skipPaths: []string{"/health"},
+			want:      true,
+		},
+		{
+			name:      "no match",
+			path:      "/api/users",
+			skipPaths: []string{"/health"},
+			want:      false,
+		},
+		{
+			name:      "prefix match with wildcard",
+			path:      "/public/images/logo.png",
+			skipPaths: []string{"/public/*"},
+			want:      true,
+		},
+		{
+			name:      "prefix match at boundary",
+			path:      "/public/",
+			skipPaths: []string{"/public/*"},
+			want:      true,
+		},
+		{
+			name:      "similar but not matching prefix",
+			path:      "/publicapi/test",
+			skipPaths: []string{"/public/*"},
+			want:      false,
+		},
+		{
+			name:      "empty skip paths",
+			path:      "/any",
+			skipPaths: []string{},
+			want:      false,
+		},
+		{
+			name:      "empty pattern in list",
+			path:      "/test",
+			skipPaths: []string{"", "/health"},
+			want:      false,
+		},
+		{
+			name:      "multiple patterns first match",
+			path:      "/health",
+			skipPaths: []string{"/health", "/metrics", "/public/*"},
+			want:      true,
+		},
+		{
+			name:      "multiple patterns last match",
+			path:      "/public/data",
+			skipPaths: []string{"/health", "/metrics", "/public/*"},
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldSkipAuth(tt.path, tt.skipPaths)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}

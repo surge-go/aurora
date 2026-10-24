@@ -517,9 +517,19 @@ engine.Use(Auth)              // 全局
 api := engine.Group("/api", Auth)  // 仅分组
 ```
 
-可复用的业务中间件放在独立的 `middleware` 包。例如，`middleware.AuthMiddleware` 会
-校验 `Authorization: Bearer <access-token>`，把 `*auth.Claims` 写入请求上下文，并将
-认证失败映射为 401；Redis 不可用时返回 503：
+可复用的业务中间件放在独立的 `middleware` 包。Aurora 提供了以下生产就绪的中间件：
+
+| 中间件 | 说明 | 文档 |
+|--------|------|------|
+| **Auth** | JWT 认证，自动刷新令牌，支持路径白名单 | [middleware/](./middleware/) |
+| **IPFilter** | IP 白名单/黑名单，支持 CIDR 段过滤 | [middleware/](./middleware/) |
+| **RateLimit** | 基于 IP 的限流保护 | [middleware/](./middleware/) |
+| **CORS** | 跨域资源共享配置 | [middleware/](./middleware/) |
+| **Gzip** | 响应压缩，减少传输数据 70-90% | [middleware/](./middleware/) |
+| **Security** | 安全响应头（HSTS、CSP、XFO 等） | [middleware/](./middleware/) |
+| **BodyLimit** | 请求体大小限制，防止资源耗尽 | [middleware/](./middleware/) |
+
+例如，`middleware.Auth` 会校验 `Authorization: Bearer <access-token>`，把 `*auth.Claims` 写入请求上下文，并将认证失败映射为 401；Redis 不可用时返回 503：
 
 ```go
 import auroramiddleware "github.com/surge-go/aurora/middleware"
@@ -528,7 +538,14 @@ userAuth, err := lifecycle.Auth("user")
 if err != nil {
     return err
 }
-api := engine.Group("/api", auroramiddleware.AuthMiddleware(userAuth))
+
+// 使用 Auth 中间件，并配置路径白名单
+api := engine.Group("/api",
+    auroramiddleware.Auth(userAuth,
+        auroramiddleware.WithSkipPaths("/health", "/login"),
+    ),
+)
+
 api.GET("/me", func(c *aurora.Context) {
     claims, _ := auroramiddleware.Claims(c)
     c.OK(claims.Subject)
