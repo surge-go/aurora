@@ -230,7 +230,7 @@ func IPFilter(config IPFilterConfig) aurora.Middleware {
 
 	return func(c *aurora.Context) {
 		// 检查是否跳过此路径
-		if shouldSkipAuth(c.Request().URL.Path, runtime.skipPaths) {
+		if shouldSkipPath(c.Request().URL.Path, runtime.skipPaths) {
 			c.Next()
 			return
 		}
@@ -410,4 +410,24 @@ func removeIPs(list []string, toRemove []string) []string {
 		}
 	}
 	return result
+}
+
+// shouldSkipPath 检查路径是否应该跳过检查。
+// 支持精确匹配和前缀匹配（以 * 结尾）。
+func shouldSkipPath(path string, skipPaths []string) bool {
+	for _, skip := range skipPaths {
+		if strings.HasSuffix(skip, "*") {
+			// 前缀匹配
+			prefix := strings.TrimSuffix(skip, "*")
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		} else {
+			// 精确匹配
+			if path == skip {
+				return true
+			}
+		}
+	}
+	return false
 }

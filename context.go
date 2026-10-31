@@ -500,7 +500,7 @@ func (c *Context) OK(data any, message ...string) {
 	if len(message) > 0 && message[0] != "" {
 		msg = message[0]
 	}
-	c.respond(http.StatusOK, 0, msg, data)
+	c.respond(http.StatusOK, 200, msg, data)
 }
 
 // Fail 返回 Aurora 统一失败响应并中止请求。

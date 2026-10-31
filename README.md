@@ -181,12 +181,12 @@ if err := engine.Run(ctx); err != nil {
 }
 ```
 
-默认配置不会启用 database、Redis、Auth、MQ、tracing 或 metrics。`Lifecycle` 会在 `Run`、`Start`
+默认配置不会启用 database、Redis、MQ、tracing 或 metrics。`Lifecycle` 会在 `Run`、`Start`
 或 `Serve` 返回后，按依赖逆序关闭它创建的资源；也可以显式调用
 `engine.Shutdown(ctx)` 或 `engine.Close(ctx)`。
 
 首次启动生成的 `config/aurora.yaml` 是完整配置模板，已经列出 logger、tracing、metrics、
-database、Redis、Auth 和三种 MQ adapter 的可序列化字段。外部资源默认保持关闭，确认连接地址、
+database、Redis 和三种 MQ adapter 的可序列化字段。外部资源默认保持关闭，确认连接地址、
 凭据和 TLS 文件后再逐项开启。常用配置结构如下，生成文件中还包含连接池、重试、监控、
 日志轮转和消息消费策略等进阶字段：
 
@@ -242,24 +242,6 @@ logger:
 #     read_timeout: 3s
 #     write_timeout: 3s
 
-# Uncomment an optional Auth block to enable JWT/Redis sessions. Protect the config file.
-# auth:
-#   admin:
-#     signing_secret: "replace-with-at-least-32-random-bytes"
-#     issuer: aurora-admin
-#     audience: [admin-client]
-#     access_ttl: 15m
-#     refresh_ttl: 24h
-#     max_session_ttl: 168h
-#     refresh_compensation_timeout: 5s
-#   user:
-#     signing_secret: "replace-with-a-different-32-byte-random-secret"
-#     issuer: aurora-user
-#     audience: [user-client]
-#     access_ttl: 30m
-#     refresh_ttl: 168h
-#     max_session_ttl: 720h
-
 # Uncomment an optional MQ block to enable it.
 # mq:
 #   driver: redis
@@ -268,39 +250,6 @@ logger:
 #     consumer: aurora
 # rabbitmq and kafka sections are included in the generated template.
 ```
-
-Auth 按名称配置多个实例，每个实例完整使用 `auth.Config`，通过 `lifecycle.Auth("admin")` 获取
-`*auth.Manager`。不支持原来的单实例扁平配置或 `lifecycle.Auth` 字段。
-
-- 不配置 `auth` 或配置 `auth: {}` 时不创建实例；存在实例时必须同时配置 Redis。
-- 实例名使用 `[a-z][a-z0-9_-]{0,63}`；配置键遵循 Viper 的大小写不敏感规则，加载后转为小写。
-  `Auth(name)` 按小写名称精确匹配，不自动去除空格、不提供默认实例或回退。
-- 每个实例必须填写至少 32 字节的 `signing_secret`、`issuer`、`audience` 和 `max_session_ttl`。
-  建议不同认证域使用独立密钥及不同的 issuer、audience；实例名不会自动写入 JWT 或 `Principal.Type`。
-- `key_prefix` 未填写时生成 `aurora:auth:{实例名}`；自定义前缀仍须包含非空 Redis hash tag。
-  不允许实例间使用相同前缀，包括自定义前缀与自动生成前缀冲突。
-- 空实例、未知字段、错误类型或无效配置会使初始化失败，错误包含实例名，解码错误不输出配置值。
-- 实例按名称排序创建，任一实例失败时整体初始化失败并清理已创建资源。
-- 实例表在启动时构建，之后保持只读，可并发获取；不提供动态注册、删除、替换或热重载。
-- 所有实例复用统一创建的 Redis 客户端，Auth 不单独关闭 Redis；`Lifecycle.Close` 统一释放资源。
-
-建议在启动阶段获取实例并注入业务服务和路由中间件。未找到实例时返回
-`ErrAuthInstanceNotFound`，可用 `errors.Is` 判断。
-
-通过 `lifecycle.AuthNames()` 获取按名称排序的实例标识列表，通过 `len(lifecycle.AuthNames())`
-获取实例数量。每次调用返回独立切片，修改结果不会影响注册表；没有实例时返回 `nil`（长度为 0）。
-
-```go
-names := lifecycle.AuthNames() // []string{"admin", "user"}
-count := len(names)            // 2
-```
-
-`refresh_compensation_timeout` 用于限制 refresh 轮换已提交、但后置状态校验失败时的补偿吊销操作，默认 `5s`，允许范围为 `1s-1m`。
-补偿吊销使用独立的有界 context，Redis 暂时不可用时不会让请求无限等待。
-
-Attempt（登录失败计数）和 RateLimit（限流）同样支持按名称配置多个实例，配置在 `attempt` 和 `ratelimit` 字段，
-分别通过 `lifecycle.Attempt(name)` 和 `lifecycle.RateLimit(name)` 获取实例。它们与 Auth 遵循相同的命名规则、
-初始化顺序、资源复用和生命周期管理策略。配置示例已包含在 `aurora.yaml` 模板中。
 
 未写入配置段的组件不会初始化；启用 tracing 或 metrics 后必须替换为实际 collector 地址。
 Redis Streams 依赖同一份 `redis` 客户端，启用 MQ Redis adapter 时也必须同时配置 Redis。
@@ -521,48 +470,12 @@ api := engine.Group("/api", Auth)  // 仅分组
 
 | 中间件 | 说明 | 文档 |
 |--------|------|------|
-| **Auth** | JWT 认证，自动刷新令牌，支持路径白名单 | [middleware/](./middleware/) |
 | **IPFilter** | IP 白名单/黑名单，支持 CIDR 段过滤 | [middleware/](./middleware/) |
-| **RateLimit** | 基于 IP 的限流保护 | [middleware/](./middleware/) |
 | **CORS** | 跨域资源共享配置 | [middleware/](./middleware/) |
 | **Gzip** | 响应压缩，减少传输数据 70-90% | [middleware/](./middleware/) |
 | **Security** | 安全响应头（HSTS、CSP、XFO 等） | [middleware/](./middleware/) |
 | **BodyLimit** | 请求体大小限制，防止资源耗尽 | [middleware/](./middleware/) |
 
-例如，`middleware.Auth` 会校验 `Authorization: Bearer <access-token>`，把 `*auth.Claims` 写入请求上下文，并将认证失败映射为 401；Redis 不可用时返回 503：
-
-```go
-import auroramiddleware "github.com/surge-go/aurora/middleware"
-
-userAuth, err := lifecycle.Auth("user")
-if err != nil {
-    return err
-}
-
-// 使用 Auth 中间件，并配置路径白名单
-api := engine.Group("/api",
-    auroramiddleware.Auth(userAuth,
-        auroramiddleware.WithSkipPaths("/health", "/login"),
-    ),
-)
-
-api.GET("/me", func(c *aurora.Context) {
-    claims, _ := auroramiddleware.Claims(c)
-    c.OK(claims.Subject)
-})
-```
-
-认证中间件默认只在 access token 过期时使用 `X-Refresh-Token` 刷新。可以通过
-`WithPreRefreshWindow(2*time.Minute)` 开启预刷新：access token 进入窗口后会尝试轮换，
-刷新成功会在响应中写入 `X-Access-Token` 和 `X-Refresh-Token`，并继续执行当前请求。
-预刷新失败不会阻断仍然有效的 access token；access token 已过期时刷新失败仍返回 401。
-同一进程内并发刷新同一个 refresh token 会通过 `singleflight` 合并为一次 Redis 刷新，
-跨进程的最终一致性仍由 `core/auth` 的 Redis Lua rotation 保证。
-测试或受控运行时可以通过 `WithClock` 注入中间件时钟；生产环境默认使用系统时钟。
-
-登录入口可以在 `auth.IssueRequest` 中传入 `IdempotencyKey`，用来处理重复点击或网络重试。
-相同主体、平台、设备和幂等键会在短 TTL 内回放第一次 token pair；请求参数不同会返回
-`ErrIdempotencyConflict`。客户端应为每次新的主动登录生成新的幂等键。
 
 ## ⚙️ 配置
 
@@ -705,12 +618,6 @@ func (e *Engine) Listening() bool
 
 ```go
 func NewLifecycle(path ...string) (*Lifecycle, error)
-func (l *Lifecycle) Auth(name string) (*auth.Manager, error)
-func (l *Lifecycle) AuthNames() []string
-func (l *Lifecycle) Attempt(name string) (*attempt.Limiter, error)
-func (l *Lifecycle) AttemptNames() []string
-func (l *Lifecycle) RateLimit(name string) (*ratelimit.Limiter, error)
-func (l *Lifecycle) RateLimitNames() []string
 func (l *Lifecycle) Run(context.Context) error
 func (l *Lifecycle) Start() error
 func (l *Lifecycle) Serve(net.Listener) error

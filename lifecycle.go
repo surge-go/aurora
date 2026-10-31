@@ -7,14 +7,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/redis/go-redis/v9"
-	"github.com/surge-go/aurora/core/auth"
-	"github.com/surge-go/aurora/core/auth/attempt"
 	coreconfig "github.com/surge-go/aurora/core/config"
 	"github.com/surge-go/aurora/core/database"
 	"github.com/surge-go/aurora/core/logger"
@@ -23,7 +19,6 @@ import (
 	mqkafka "github.com/surge-go/aurora/core/mq/kafka"
 	mqrabbitmq "github.com/surge-go/aurora/core/mq/rabbitmq"
 	mqredis "github.com/surge-go/aurora/core/mq/redis"
-	"github.com/surge-go/aurora/core/ratelimit"
 	coreRedis "github.com/surge-go/aurora/core/redis"
 	"github.com/surge-go/aurora/core/tracing"
 	"gorm.io/gorm"
@@ -55,13 +50,6 @@ type Lifecycle struct {
 	Database *gorm.DB
 	Redis    redis.UniversalClient
 
-	// authManagers is populated during construction and is read-only afterwards.
-	authManagers map[string]*auth.Manager
-	// attemptLimiters is populated during construction and is read-only afterwards.
-	attemptLimiters map[string]*attempt.Limiter
-	// rateLimiters is populated during construction and is read-only afterwards.
-	rateLimiters map[string]*ratelimit.Limiter
-
 	MQPublisher mq.Publisher
 	MQConsumer  mq.Consumer
 
@@ -86,12 +74,6 @@ type lifecycleConfig struct {
 	Database *database.Config  `mapstructure:"database"`
 	Redis    *coreRedis.Config `mapstructure:"redis"`
 	MQ       *lifecycleMQ      `mapstructure:"mq"`
-
-	// Auth is decoded separately to reject unknown fields without leaking secrets
-	// through configuration decoder errors.
-	Auth      map[string]auth.Config      `mapstructure:"-"`
-	Attempt   map[string]attempt.Config   `mapstructure:"-"`
-	RateLimit map[string]ratelimit.Config `mapstructure:"-"`
 }
 
 type lifecycleMQ struct {
@@ -129,21 +111,6 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 	if err := managedConfig.Unmarshal(&settings); err != nil {
 		managedConfig.Close()
 		return nil, fmt.Errorf("decode Aurora config %q: %w", configPath, err)
-	}
-	settings.Auth, err = decodeLifecycleAuth(managedConfig)
-	if err != nil {
-		managedConfig.Close()
-		return nil, err
-	}
-	settings.Attempt, err = decodeLifecycleAttempt(managedConfig)
-	if err != nil {
-		managedConfig.Close()
-		return nil, err
-	}
-	settings.RateLimit, err = decodeLifecycleRateLimit(managedConfig)
-	if err != nil {
-		managedConfig.Close()
-		return nil, err
 	}
 
 	ctx := context.Background()
@@ -229,57 +196,6 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 		}
 	}
 
-	authManagers, err := newLifecycleAuth(settings.Auth, redisClient)
-	if err != nil {
-		if redisClient != nil {
-			_ = redisClient.Close()
-		}
-		_ = database.Close(db)
-		if metricRuntime != nil {
-			_ = metricRuntime.Shutdown(ctx)
-		}
-		if traceRuntime != nil {
-			_ = traceRuntime.Shutdown(ctx)
-		}
-		_ = log.Sync()
-		managedConfig.Close()
-		return nil, err
-	}
-
-	attemptLimiters, err := newLifecycleAttempt(settings.Attempt, redisClient)
-	if err != nil {
-		if redisClient != nil {
-			_ = redisClient.Close()
-		}
-		_ = database.Close(db)
-		if metricRuntime != nil {
-			_ = metricRuntime.Shutdown(ctx)
-		}
-		if traceRuntime != nil {
-			_ = traceRuntime.Shutdown(ctx)
-		}
-		_ = log.Sync()
-		managedConfig.Close()
-		return nil, err
-	}
-
-	rateLimiters, err := newLifecycleRateLimit(settings.RateLimit, redisClient)
-	if err != nil {
-		if redisClient != nil {
-			_ = redisClient.Close()
-		}
-		_ = database.Close(db)
-		if metricRuntime != nil {
-			_ = metricRuntime.Shutdown(ctx)
-		}
-		if traceRuntime != nil {
-			_ = traceRuntime.Shutdown(ctx)
-		}
-		_ = log.Sync()
-		managedConfig.Close()
-		return nil, err
-	}
-
 	publisher, consumer, err := newLifecycleMQ(settings.MQ, redisClient)
 	if err != nil {
 		if redisClient != nil {
@@ -324,18 +240,15 @@ func NewLifecycle(path ...string) (*Lifecycle, error) {
 	}
 
 	lifecycle := &Lifecycle{
-		Engine:          engine,
-		Config:          managedConfig,
-		Logger:          log,
-		Tracing:         traceRuntime,
-		Metrics:         metricRuntime,
-		Database:        db,
-		Redis:           redisClient,
-		authManagers:    authManagers,
-		attemptLimiters: attemptLimiters,
-		rateLimiters:    rateLimiters,
-		MQPublisher:     publisher,
-		MQConsumer:      consumer,
+		Engine:      engine,
+		Config:      managedConfig,
+		Logger:      log,
+		Tracing:     traceRuntime,
+		Metrics:     metricRuntime,
+		Database:    db,
+		Redis:       redisClient,
+		MQPublisher: publisher,
+		MQConsumer:  consumer,
 	}
 
 	// 打印启动信息
@@ -375,24 +288,6 @@ func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
 		fmt.Fprintf(&buf, "[Aurora] 启用的资源: %s\n", strings.Join(resources, ", "))
 	}
 
-	// 收集认证实例
-	if len(l.authManagers) > 0 {
-		authInstances := l.AuthNames()
-		fmt.Fprintf(&buf, "[Aurora] Auth 实例: %s\n", strings.Join(authInstances, ", "))
-	}
-
-	// 收集失败计数器实例
-	if len(l.attemptLimiters) > 0 {
-		attemptInstances := l.AttemptNames()
-		fmt.Fprintf(&buf, "[Aurora] Attempt 实例: %s\n", strings.Join(attemptInstances, ", "))
-	}
-
-	// 收集限流器实例
-	if len(l.rateLimiters) > 0 {
-		rateLimitInstances := l.RateLimitNames()
-		fmt.Fprintf(&buf, "[Aurora] RateLimit 实例: %s\n", strings.Join(rateLimitInstances, ", "))
-	}
-
 	// 收集启用的中间件
 	var middlewares []string
 	if cfg.Middleware.RequestID {
@@ -416,358 +311,6 @@ func (l *Lifecycle) logLifecycleStartup(cfg *Config) {
 	}
 
 	fmt.Fprint(os.Stdout, buf.String())
-}
-
-// Auth returns the named authentication manager. Names are matched exactly;
-// configuration keys are lowercased by the configuration loader. The registry
-// is immutable after construction and supports concurrent lookups.
-func (l *Lifecycle) Auth(name string) (*auth.Manager, error) {
-	if l == nil {
-		return nil, errors.New("lifecycle is nil")
-	}
-	manager, ok := l.authManagers[name]
-	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrAuthInstanceNotFound, name)
-	}
-	return manager, nil
-}
-
-// AuthNames returns a sorted copy of the registered authentication manager names.
-// A nil lifecycle or an empty registry returns nil. Concurrent calls are safe.
-func (l *Lifecycle) AuthNames() []string {
-	if l == nil || len(l.authManagers) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(l.authManagers))
-	for name := range l.authManagers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Attempt returns the named attempt limiter. Names are matched exactly;
-// configuration keys are lowercased by the configuration loader. The registry
-// is immutable after construction and supports concurrent lookups.
-func (l *Lifecycle) Attempt(name string) (*attempt.Limiter, error) {
-	if l == nil {
-		return nil, errors.New("lifecycle is nil")
-	}
-	limiter, ok := l.attemptLimiters[name]
-	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrAttemptInstanceNotFound, name)
-	}
-	return limiter, nil
-}
-
-// AttemptNames returns a sorted copy of the registered attempt limiter names.
-// A nil lifecycle or an empty registry returns nil. Concurrent calls are safe.
-func (l *Lifecycle) AttemptNames() []string {
-	if l == nil || len(l.attemptLimiters) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(l.attemptLimiters))
-	for name := range l.attemptLimiters {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// RateLimit returns the named rate limiter. Names are matched exactly;
-// configuration keys are lowercased by the configuration loader. The registry
-// is immutable after construction and supports concurrent lookups.
-func (l *Lifecycle) RateLimit(name string) (*ratelimit.Limiter, error) {
-	if l == nil {
-		return nil, errors.New("lifecycle is nil")
-	}
-	limiter, ok := l.rateLimiters[name]
-	if !ok {
-		return nil, fmt.Errorf("%w: %q", ErrRateLimitInstanceNotFound, name)
-	}
-	return limiter, nil
-}
-
-// RateLimitNames returns a sorted copy of the registered rate limiter names.
-// A nil lifecycle or an empty registry returns nil. Concurrent calls are safe.
-func (l *Lifecycle) RateLimitNames() []string {
-	if l == nil || len(l.rateLimiters) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(l.rateLimiters))
-	for name := range l.rateLimiters {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Decode each instance independently so malformed fields cannot expose signing
-// secrets in mapstructure's detailed conversion errors. Other configuration
-// sections retain their existing decoding behavior.
-func decodeLifecycleAuth(config *coreconfig.Config) (map[string]auth.Config, error) {
-	raw := coreconfig.Get[any](config, "auth")
-	if raw == nil {
-		return nil, nil
-	}
-	instances, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("initialize auth: %w: expected a map of named instances", auth.ErrInvalidConfig)
-	}
-	names := make([]string, 0, len(instances))
-	for name := range instances {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	configs := make(map[string]auth.Config, len(instances))
-	for _, name := range names {
-		if !validAuthInstanceName(name) {
-			return nil, fmt.Errorf("initialize auth %q: %w: name must match [a-z][a-z0-9_-]{0,63}", name, auth.ErrInvalidConfig)
-		}
-		fields, ok := instances[name].(map[string]any)
-		if !ok || len(fields) == 0 {
-			return nil, fmt.Errorf("initialize auth %q: %w: expected a non-empty configuration map", name, auth.ErrInvalidConfig)
-		}
-		var cfg auth.Config
-		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-			Result:      &cfg,
-			TagName:     "mapstructure",
-			ErrorUnused: true,
-			DecodeHook:  mapstructure.StringToTimeDurationHookFunc(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("initialize auth %q: %w", name, err)
-		}
-		if err := decoder.Decode(fields); err != nil {
-			return nil, fmt.Errorf("initialize auth %q: %w: invalid configuration fields or types", name, auth.ErrInvalidConfig)
-		}
-		configs[name] = cfg
-	}
-	return configs, nil
-}
-
-func validAuthInstanceName(name string) bool {
-	if len(name) == 0 || len(name) > 64 || name[0] < 'a' || name[0] > 'z' {
-		return false
-	}
-	for _, c := range name {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func newLifecycleAuth(configs map[string]auth.Config, client redis.UniversalClient) (map[string]*auth.Manager, error) {
-	if len(configs) == 0 {
-		return nil, nil
-	}
-	if client == nil {
-		return nil, errors.New("initialize auth: redis must be configured")
-	}
-	names := make([]string, 0, len(configs))
-	for name := range configs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	managers := make(map[string]*auth.Manager, len(configs))
-	prefixOwners := make(map[string]string, len(configs))
-	for _, name := range names {
-		cfg := configs[name]
-		cfg.KeyPrefix = strings.TrimSpace(cfg.KeyPrefix)
-		if cfg.KeyPrefix == "" {
-			cfg.KeyPrefix = "aurora:auth:{" + name + "}"
-		}
-		if owner, exists := prefixOwners[cfg.KeyPrefix]; exists {
-			return nil, fmt.Errorf("initialize auth %q: %w: key_prefix conflicts with instance %q", name, auth.ErrInvalidConfig, owner)
-		}
-		manager, err := auth.New(client, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("initialize auth %q: %w", name, err)
-		}
-		prefixOwners[cfg.KeyPrefix] = name
-		managers[name] = manager
-	}
-	return managers, nil
-}
-
-// Decode each attempt instance independently so malformed fields cannot expose
-// HMAC keys in mapstructure's detailed conversion errors.
-func decodeLifecycleAttempt(config *coreconfig.Config) (map[string]attempt.Config, error) {
-	raw := coreconfig.Get[any](config, "attempt")
-	if raw == nil {
-		return nil, nil
-	}
-	instances, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("initialize attempt: %w: expected a map of named instances", attempt.ErrInvalidConfig)
-	}
-	names := make([]string, 0, len(instances))
-	for name := range instances {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	configs := make(map[string]attempt.Config, len(instances))
-	for _, name := range names {
-		if !validAttemptInstanceName(name) {
-			return nil, fmt.Errorf("initialize attempt %q: %w: name must match [a-z][a-z0-9_-]{0,63}", name, attempt.ErrInvalidConfig)
-		}
-		fields, ok := instances[name].(map[string]any)
-		if !ok || len(fields) == 0 {
-			return nil, fmt.Errorf("initialize attempt %q: %w: expected a non-empty configuration map", name, attempt.ErrInvalidConfig)
-		}
-		var cfg attempt.Config
-		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-			Result:      &cfg,
-			TagName:     "mapstructure",
-			ErrorUnused: true,
-			DecodeHook:  mapstructure.StringToTimeDurationHookFunc(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("initialize attempt %q: %w", name, err)
-		}
-		if err := decoder.Decode(fields); err != nil {
-			return nil, fmt.Errorf("initialize attempt %q: %w: invalid configuration fields or types", name, attempt.ErrInvalidConfig)
-		}
-		configs[name] = cfg
-	}
-	return configs, nil
-}
-
-func validAttemptInstanceName(name string) bool {
-	if len(name) == 0 || len(name) > 64 || name[0] < 'a' || name[0] > 'z' {
-		return false
-	}
-	for _, c := range name {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func newLifecycleAttempt(configs map[string]attempt.Config, client redis.UniversalClient) (map[string]*attempt.Limiter, error) {
-	if len(configs) == 0 {
-		return nil, nil
-	}
-	if client == nil {
-		return nil, errors.New("initialize attempt: redis must be configured")
-	}
-	names := make([]string, 0, len(configs))
-	for name := range configs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	limiters := make(map[string]*attempt.Limiter, len(configs))
-	prefixOwners := make(map[string]string, len(configs))
-	for _, name := range names {
-		cfg := configs[name]
-		cfg.KeyPrefix = strings.TrimSpace(cfg.KeyPrefix)
-		if cfg.KeyPrefix == "" {
-			cfg.KeyPrefix = "aurora:auth:attempt:{" + name + "}"
-		}
-		if owner, exists := prefixOwners[cfg.KeyPrefix]; exists {
-			return nil, fmt.Errorf("initialize attempt %q: %w: key_prefix conflicts with instance %q", name, attempt.ErrInvalidConfig, owner)
-		}
-		limiter, err := attempt.New(client, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("initialize attempt %q: %w", name, err)
-		}
-		prefixOwners[cfg.KeyPrefix] = name
-		limiters[name] = limiter
-	}
-	return limiters, nil
-}
-
-// Decode each ratelimit instance independently so malformed fields cannot expose
-// HMAC keys in mapstructure's detailed conversion errors.
-func decodeLifecycleRateLimit(config *coreconfig.Config) (map[string]ratelimit.Config, error) {
-	raw := coreconfig.Get[any](config, "ratelimit")
-	if raw == nil {
-		return nil, nil
-	}
-	instances, ok := raw.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("initialize ratelimit: %w: expected a map of named instances", ratelimit.ErrInvalidConfig)
-	}
-	names := make([]string, 0, len(instances))
-	for name := range instances {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	configs := make(map[string]ratelimit.Config, len(instances))
-	for _, name := range names {
-		if !validRateLimitInstanceName(name) {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w: name must match [a-z][a-z0-9_-]{0,63}", name, ratelimit.ErrInvalidConfig)
-		}
-		fields, ok := instances[name].(map[string]any)
-		if !ok || len(fields) == 0 {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w: expected a non-empty configuration map", name, ratelimit.ErrInvalidConfig)
-		}
-		var cfg ratelimit.Config
-		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-			Result:      &cfg,
-			TagName:     "mapstructure",
-			ErrorUnused: true,
-			DecodeHook:  mapstructure.StringToTimeDurationHookFunc(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w", name, err)
-		}
-		if err := decoder.Decode(fields); err != nil {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w: invalid configuration fields or types", name, ratelimit.ErrInvalidConfig)
-		}
-		configs[name] = cfg
-	}
-	return configs, nil
-}
-
-func validRateLimitInstanceName(name string) bool {
-	if len(name) == 0 || len(name) > 64 || name[0] < 'a' || name[0] > 'z' {
-		return false
-	}
-	for _, c := range name {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func newLifecycleRateLimit(configs map[string]ratelimit.Config, client redis.UniversalClient) (map[string]*ratelimit.Limiter, error) {
-	if len(configs) == 0 {
-		return nil, nil
-	}
-	if client == nil {
-		return nil, errors.New("initialize ratelimit: redis must be configured")
-	}
-	names := make([]string, 0, len(configs))
-	for name := range configs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	limiters := make(map[string]*ratelimit.Limiter, len(configs))
-	prefixOwners := make(map[string]string, len(configs))
-	for _, name := range names {
-		cfg := configs[name]
-		cfg.KeyPrefix = strings.TrimSpace(cfg.KeyPrefix)
-		if cfg.KeyPrefix == "" {
-			cfg.KeyPrefix = "aurora:ratelimit:{" + name + "}"
-		}
-		if owner, exists := prefixOwners[cfg.KeyPrefix]; exists {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w: key_prefix conflicts with instance %q", name, ratelimit.ErrInvalidConfig, owner)
-		}
-		limiter, err := ratelimit.New(client, cfg)
-		if err != nil {
-			return nil, fmt.Errorf("initialize ratelimit %q: %w", name, err)
-		}
-		prefixOwners[cfg.KeyPrefix] = name
-		limiters[name] = limiter
-	}
-	return limiters, nil
 }
 
 // Run starts the HTTP server and releases all lifecycle-owned resources when
@@ -1251,70 +794,6 @@ logger:
 #  #   route_randomly: false      # 是否随机路由
 #  #   failing_timeout_seconds: 15 # 节点标记为失败的超时时间
 #  #   cluster_state_reload_interval: 0s # 集群状态重新加载间隔
-
-# 可选的认证配置。取消注释整个块以启用 JWT/Redis 会话管理。
-# 注意：signing_secret 必须妥善保护，建议使用环境变量或密钥管理系统。
-#auth:
-#  admin:
-#    key_prefix: aurora:auth:{admin}              # Redis key 前缀（必须包含 hash tag）
-#    signing_secret: "replace-with-at-least-32-random-bytes" # JWT 签名密钥（至少 32 字节）
-#    issuer: aurora-admin                         # JWT 签发者
-#    audience: [admin-client]                     # JWT 受众列表
-#    access_ttl: 15m                              # 访问令牌有效期
-#    refresh_ttl: 168h                            # 刷新令牌有效期（7天）
-#    max_session_ttl: 720h                        # 会话最大生存时间（30天）
-#    clock_skew: 0s                               # 时钟偏移容忍度
-#    revoke_batch_size: 100                       # 批量吊销时的批次大小
-#    refresh_compensation_timeout: 5s             # 刷新补偿操作超时
-#    policy:
-#      max_sessions: 0                            # 全局最大会话数（0 表示无限制）
-#      default_platform_policy:
-#        enabled: true                            # 是否启用默认平台策略
-#        max_sessions: 0                          # 平台最大会话数（0 表示无限制）
-#        require_device_id: false                 # 是否要求设备 ID
-#        kickout_strategy: oldest                 # 踢出策略: oldest, newest
-#        exclusive_with: []                       # 互斥平台列表
-#      platform_policies: {}                      # 各平台自定义策略
-#  user:
-#    key_prefix: aurora:auth:{user}
-#    signing_secret: "replace-with-a-different-32-byte-random-secret"
-#    issuer: aurora-user
-#    audience: [user-client]
-#    access_ttl: 30m
-#    refresh_ttl: 168h
-#    max_session_ttl: 720h
-
-# 可选的登录失败计数配置。取消注释整个块以启用登录失败追踪和账号锁定。
-# 需要同时配置 Redis。
-#attempt:
-#  admin:
-#    key_prefix: aurora:auth:attempt:{admin}      # Redis key 前缀（必须包含 hash tag）
-#    hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
-#    failure_limit: 5                             # 失败次数阈值
-#    window: 10m                                  # 统计窗口大小
-#    lock_duration: 15m                           # 锁定持续时间
-#    attempt_ttl: 10m                             # 失败记录 TTL
-#  user:
-#    key_prefix: aurora:auth:attempt:{user}
-#    hmac_key: "replace-with-a-different-32-byte-random-secret"
-#    failure_limit: 3
-#    window: 5m
-#    lock_duration: 10m
-#    attempt_ttl: 5m
-
-# 可选的限流器配置。取消注释整个块以启用分布式限流。
-# 需要同时配置 Redis。
-#ratelimit:
-#  api:
-#    key_prefix: aurora:ratelimit:{api}           # Redis key 前缀（必须包含 hash tag）
-#    hmac_key: "replace-with-at-least-32-random-bytes" # HMAC 密钥（至少 32 字节）
-#    limit: 100                                   # 时间窗口内最大请求数
-#    window: 1m                                   # 滑动窗口大小
-#  strict:
-#    key_prefix: aurora:ratelimit:{strict}
-#    hmac_key: "replace-with-a-different-32-byte-random-secret"
-#    limit: 10
-#    window: 1m
 
 # 可选的消息队列配置。取消注释整个块以启用其中一种适配器。
 #mq:

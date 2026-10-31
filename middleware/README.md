@@ -15,9 +15,7 @@ Aurora 框架的官方中间件集合，提供常用的 HTTP 中间件功能。
 
 | 中间件 | 说明 |
 |--------|------|
-| **Auth** | JWT 认证，自动刷新令牌，支持路径白名单 |
 | **IPFilter** | IP 白名单/黑名单，支持 CIDR 段过滤，支持动态更新 |
-| **RateLimit** | 基于 IP 的限流保护 |
 | **CORS** | 跨域资源共享配置 |
 | **Gzip** | 响应压缩，减少传输数据 70-90% |
 | **Security** | 安全响应头（HSTS、CSP、XFO 等） |
@@ -33,21 +31,12 @@ go get -u github.com/surge-go/aurora
 
 ### 依赖说明
 
-大多数中间件**零外部依赖**，仅依赖 Go 标准库和 Aurora 核心：
+所有中间件**零外部依赖**，仅依赖 Go 标准库和 Aurora 核心：
 - ✅ CORS
 - ✅ Gzip
 - ✅ Security
 - ✅ BodyLimit
 - ✅ IPFilter
-
-部分中间件依赖 Aurora 核心组件和 Redis：
-- **Auth**: 依赖 `aurora/core/auth` 和 Redis（用于 token 存储和轮换）
-- **RateLimit**: 依赖 `aurora/core/ratelimit` 和 Redis（用于分布式限流计数）
-
-```bash
-# 如果需要使用 Auth 或 RateLimit，还需要安装 Redis 客户端
-go get -u github.com/redis/go-redis/v9
-```
 
 ### 基础使用
 
@@ -98,89 +87,17 @@ engine.Use(middleware.CORS(middleware.DefaultCORSConfig()))
 // 5. IP 过滤 - IP 白名单/黑名单（如果需要）
 // engine.Use(middleware.IPFilter(middleware.IPFilterConfig{...}))
 
-// 6. 认证 - 验证请求身份（如果需要）
-// authManager := coreauth.NewManager(...)
-// engine.Use(middleware.Auth(authManager))
-
-// 7. 限流 - 防止滥用（如果需要）
-// limiter, _ := ratelimit.New(redisClient, ratelimit.Config{...})
-// engine.Use(middleware.IPRateLimiter(limiter))
-
-// 8. Body Limit - 限制请求体大小（在解析前）
+// 6. Body Limit - 限制请求体大小（在解析前）
 engine.Use(middleware.BodyLimit(middleware.DefaultBodyLimitConfig()))
 
-// 9. Gzip - 压缩响应（在业务逻辑后）
+// 7. Gzip - 压缩响应（在业务逻辑后）
 engine.Use(middleware.Gzip(middleware.DefaultGzipConfig()))
 
-// 10. 业务路由
+// 8. 业务路由
 engine.GET("/api/data", dataHandler)
 ```
 
 ## 📚 详细文档
-
-### Auth JWT 认证
-
-基于 JWT 的请求认证中间件，支持自动令牌刷新、主动刷新策略和路径白名单。
-
-**特性**:
-- ✅ Bearer Token 验证
-- ✅ 自动令牌刷新（Access Token 过期时）
-- ✅ 主动刷新策略（临近过期时提前刷新）
-- ✅ 路径白名单（跳过认证）
-- ✅ 单次刷新并发控制（singleflight）
-- ✅ 灵活的配置选项
-
-```go
-// 初始化 Auth Manager
-authManager, err := coreauth.NewManager(&coreauth.Config{
-    Redis:              redisClient,
-    AccessTokenSecret:  os.Getenv("JWT_ACCESS_SECRET"),
-    RefreshTokenSecret: os.Getenv("JWT_REFRESH_SECRET"),
-    AccessTokenTTL:     15 * time.Minute,
-    RefreshTokenTTL:    7 * 24 * time.Hour,
-})
-
-// 使用默认配置
-engine.Use(middleware.Auth(authManager))
-
-// 带路径白名单
-engine.Use(middleware.Auth(authManager,
-    middleware.WithSkipPaths(
-        "/health",           // 健康检查
-        "/metrics",          // 监控指标
-        "/public/*",         // 公共资源（通配符）
-        "/api/v1/login",     // 登录接口
-    ),
-))
-
-// 主动刷新配置（临近过期前 5 分钟自动刷新）
-engine.Use(middleware.Auth(authManager,
-    middleware.WithPreRefreshWindow(5 * time.Minute),
-    middleware.WithSkipPaths("/health", "/api/v1/login"),
-))
-
-// 在处理器中获取 claims
-engine.GET("/profile", func(c *aurora.Context) {
-    claims, ok := middleware.Claims(c)
-    if !ok {
-        c.JSON(401, map[string]string{"error": "unauthorized"})
-        return
-    }
-    
-    c.JSON(200, map[string]any{
-        "user_id": claims.Subject,
-        "role": claims.Get("role"),
-    })
-})
-```
-
-**适用场景**: API 认证、用户身份验证、权限控制
-
-**白名单说明**:
-- 精确匹配: `/health`, `/api/v1/login`
-- 通配符: `/public/*` 匹配 `/public/` 下所有路径
-
----
 
 ### IPFilter IP 白名单/黑名单
 
@@ -317,50 +234,6 @@ ctrl.GetAllowList()                              // 获取当前白名单
 ```
 
 **线程安全保证**: 所有 Controller 方法都是并发安全的，可以在多个 goroutine 中同时调用。
-
----
-
-### RateLimit IP 限流
-
-基于 Redis 的 IP 限流中间件，防止单个客户端滥用 API。
-
-**特性**:
-- ✅ 滑动窗口限流算法
-- ✅ 基于 IP 的自动识别（支持代理头）
-- ✅ 标准限流响应头（X-RateLimit-*）
-- ✅ 故障降级策略（fail-open）
-- ✅ 自定义 IP 提取逻辑
-
-```go
-// 创建限流器
-limiter, err := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "api:limit:ip:",
-    Limit:     100,                // 100 次请求
-    Window:    time.Minute,        // 每分钟
-})
-
-// 全局限流（故障时放行）
-engine.Use(middleware.IPRateLimiter(limiter,
-    middleware.WithFailOpen(),
-    middleware.WithLogger(logger),
-))
-
-// 针对特定路由限流
-loginLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "login:limit:ip:",
-    Limit:     5,                  // 5 次登录尝试
-    Window:    time.Minute,        // 每分钟
-})
-
-engine.POST("/login",
-    middleware.IPRateLimiter(loginLimiter), // 故障时拒绝（安全优先）
-    handlers.Login,
-)
-```
-
-**适用场景**: API 保护、登录限制、防止爬虫、防止暴力破解
-
-[📖 完整文档](./RATELIMIT.md)
 
 ---
 
@@ -553,46 +426,14 @@ engine.Use(middleware.IPRateLimiter(limiter,
 
 **适用**: 特殊需求、性能优化、复杂场景
 
-### 4. 基于依赖的配置
-
-某些中间件需要外部依赖：
-
-```go
-// Auth 需要 Manager（依赖 Redis）
-authManager, _ := coreauth.NewManager(&coreauth.Config{
-    Redis:              redisClient,
-    AccessTokenSecret:  secret,
-    AccessTokenTTL:     15 * time.Minute,
-})
-engine.Use(middleware.Auth(authManager))
-
-// RateLimit 需要 Limiter（依赖 Redis）
-limiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    Limit:  100,
-    Window: time.Minute,
-})
-engine.Use(middleware.IPRateLimiter(limiter))
-```
-
-**适用**: 需要状态存储的中间件（认证、限流等）
-
 ## 🎯 使用场景
 
-### 场景 1: 标准 API 服务（带认证）
+### 场景 1: 标准 API 服务
 
 ```go
 engine := aurora.New()
 
-// 初始化认证管理器
-authManager, _ := coreauth.NewManager(&coreauth.Config{
-    Redis:              redisClient,
-    AccessTokenSecret:  os.Getenv("JWT_ACCESS_SECRET"),
-    RefreshTokenSecret: os.Getenv("JWT_REFRESH_SECRET"),
-    AccessTokenTTL:     15 * time.Minute,
-    RefreshTokenTTL:    7 * 24 * time.Hour,
-})
-
-// 全局中间件
+// 核心中间件
 engine.Use(middleware.Security(middleware.DefaultSecurityConfig()))
 engine.Use(middleware.CORS(middleware.DefaultCORSConfig()))
 engine.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
@@ -603,60 +444,13 @@ engine.Use(middleware.Gzip(middleware.GzipConfig{
     MinLength: 1024,
 }))
 
-// 公开路由
-engine.POST("/auth/login", handlers.Login)
-engine.POST("/auth/register", handlers.Register)
-
-// 需要认证的路由
+// 业务路由
 api := engine.Group("/api/v1")
-api.Use(middleware.Auth(authManager,
-    middleware.WithPreRefreshWindow(5 * time.Minute), // 主动刷新
-))
-api.GET("/profile", handlers.GetProfile)
-api.PUT("/profile", handlers.UpdateProfile)
-api.GET("/users/:id", handlers.GetUser)
+api.POST("/users", createUser)
+api.GET("/users/:id", getUser)
 ```
 
-### 场景 2: 带限流保护的登录接口
-
-```go
-engine := aurora.New()
-
-// 全局限流：100 req/min
-globalLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "api:global:ip:",
-    Limit:     100,
-    Window:    time.Minute,
-})
-engine.Use(middleware.IPRateLimiter(globalLimiter,
-    middleware.WithFailOpen(), // 限流器故障时放行
-    middleware.WithLogger(logger),
-))
-
-// 登录限流：5 次/分钟（严格模式）
-loginLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "auth:login:ip:",
-    Limit:     5,
-    Window:    time.Minute,
-})
-engine.POST("/auth/login",
-    middleware.IPRateLimiter(loginLimiter), // 故障时拒绝
-    handlers.Login,
-)
-
-// 注册限流：3 次/小时
-registerLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "auth:register:ip:",
-    Limit:     3,
-    Window:    time.Hour,
-})
-engine.POST("/auth/register",
-    middleware.IPRateLimiter(registerLimiter),
-    handlers.Register,
-)
-```
-
-### 场景 3: 内网 API（IP 白名单保护）
+### 场景 2: 内网 API（IP 白名单保护）
 
 ```go
 engine := aurora.New()
@@ -677,7 +471,7 @@ engine.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
     Limit: 1 * 1024 * 1024, // API 限制 1MB
 }))
 engine.Use(middleware.Gzip(middleware.GzipConfig{
-    Level:     gzip.BestSpeed, // 快速压缩
+    Level:     gzip.BestSpeed,
     MinLength: 1024,
 }))
 
@@ -687,7 +481,7 @@ api.POST("/users", createUser)
 api.GET("/users/:id", getUser)
 ```
 
-### 场景 4: 防御攻击（IP 黑名单）
+### 场景 3: 防御攻击（IP 黑名单）
 
 ```go
 engine := aurora.New()
@@ -701,40 +495,16 @@ engine.Use(middleware.IPFilter(middleware.IPFilterConfig{
     TrustedProxies: []string{"10.0.0.1"}, // 负载均衡器
 }))
 
-// 全局限流
-globalLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    Limit:  100,
-    Window: time.Minute,
-})
-engine.Use(middleware.IPRateLimiter(globalLimiter))
+// 核心中间件
+engine.Use(middleware.Security(middleware.DefaultSecurityConfig()))
+engine.Use(middleware.BodyLimit(middleware.DefaultBodyLimitConfig()))
 
 // 业务路由
 api := engine.Group("/api")
 api.GET("/data", getData)
 ```
 
-### 场景 5: 标准 API 服务（无 IP 限制）
-
-```go
-engine := aurora.New()
-
-// 核心中间件
-engine.Use(middleware.Security(middleware.DefaultSecurityConfig()))
-engine.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
-    Limit: 1 * 1024 * 1024, // API 限制 1MB
-}))
-engine.Use(middleware.Gzip(middleware.GzipConfig{
-    Level:     gzip.BestSpeed, // 快速压缩
-    MinLength: 1024,
-}))
-
-// 业务路由
-api := engine.Group("/api/v1")
-api.POST("/users", createUser)
-api.GET("/users/:id", getUser)
-```
-
-### 场景 6: 文件上传服务
+### 场景 4: 文件上传服务
 
 ```go
 engine := aurora.New()
@@ -753,7 +523,6 @@ upload := engine.Group("/upload")
 upload.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
     Limit: 100 * 1024 * 1024, // 100MB
 }))
-// 上传不压缩响应
 upload.POST("/image", uploadImageHandler)
 upload.POST("/file", uploadFileHandler)
 ```
@@ -766,9 +535,9 @@ engine := aurora.New()
 // 静态资源：高压缩率
 static := engine.Group("/static")
 static.Use(middleware.Gzip(middleware.GzipConfig{
-    Level:     gzip.BestCompression, // 最高压缩
+    Level:     gzip.BestCompression,
     MinLength: 512,
-    ExcludedExtensions: []string{".png", ".jpg", ".mp4"}, // 排除已压缩格式
+    ExcludedExtensions: []string{".png", ".jpg", ".mp4"},
 }))
 static.StaticFS("/", http.Dir("./public"))
 
@@ -779,7 +548,7 @@ api.Use(middleware.Gzip(middleware.GzipConfig{
 }))
 ```
 
-### 场景 6: 生产环境全栈配置（带认证和限流）
+### 场景 6: 生产环境全栈配置
 
 ```go
 engine := aurora.New()
@@ -798,80 +567,23 @@ engine.Use(middleware.CORS(middleware.CORSConfig{
     AllowCredentials: true,
 }))
 
-// 4. 全局限流（宽松策略，故障时放行）
-globalLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "api:global:ip:",
-    Limit:     1000,
-    Window:    time.Minute,
-})
-engine.Use(middleware.IPRateLimiter(globalLimiter,
-    middleware.WithFailOpen(),
-    middleware.WithLogger(logger),
-))
-
-// 5. Body Limit（全局保守策略）
+// 4. Body Limit
 engine.Use(middleware.BodyLimit(middleware.BodyLimitConfig{
     Limit: 1 * 1024 * 1024, // 1MB
 }))
 
-// 6. Gzip（平衡压缩）
+// 5. Gzip
 engine.Use(middleware.Gzip(middleware.GzipConfig{
     Level:     gzip.DefaultCompression,
     MinLength: 1024,
 }))
 
-// 7. 认证管理器
-authManager, _ := coreauth.NewManager(&coreauth.Config{
-    Redis:              redisClient,
-    AccessTokenSecret:  os.Getenv("JWT_ACCESS_SECRET"),
-    RefreshTokenSecret: os.Getenv("JWT_REFRESH_SECRET"),
-    AccessTokenTTL:     15 * time.Minute,
-    RefreshTokenTTL:    7 * 24 * time.Hour,
-})
-
-// 8. 公开路由（带严格限流）
-loginLimiter, _ := ratelimit.New(redisClient, ratelimit.Config{
-    KeyPrefix: "auth:login:ip:",
-    Limit:     5,
-    Window:    time.Minute,
-})
-engine.POST("/auth/login",
-    middleware.IPRateLimiter(loginLimiter),
-    handlers.Login,
-)
-
-// 9. 受保护的 API 路由
+// 6. 业务路由
 api := engine.Group("/api/v1")
-api.Use(middleware.Auth(authManager,
-    middleware.WithPreRefreshWindow(5 * time.Minute),
-))
 setupRoutes(api)
 ```
 
 ## 📊 性能建议
-
-### Auth 认证策略
-
-| 场景 | 推荐配置 | 原因 |
-|------|---------|------|
-| 高流量 API | 不启用主动刷新 | 减少 Redis 负载 |
-| 移动端应用 | 启用主动刷新（5 分钟） | 减少客户端刷新逻辑 |
-| Web 应用 | 启用主动刷新（2-3 分钟） | 平滑的用户体验 |
-
-**Access Token TTL 建议**:
-- 移动端 API: 30-60 分钟
-- Web 应用: 15-30 分钟
-- 高安全场景: 5-15 分钟
-
-### RateLimit 限流策略
-
-| 业务类型 | 推荐配置 | 降级策略 |
-|----------|---------|---------|
-| 全局限流 | 100-1000 req/min | fail-open（放行） |
-| API 限流 | 60-100 req/min | fail-open（放行） |
-| 登录接口 | 5 req/min | fail-close（拒绝） |
-| 注册接口 | 3 req/hour | fail-close（拒绝） |
-| 短信发送 | 10 req/hour | fail-close（拒绝） |
 
 ### Gzip 压缩级别选择
 
@@ -893,12 +605,12 @@ setupRoutes(api)
 
 ### 安全头配置建议
 
-| 环境 | 推荐配置 | Auth 认证 |
-|------|---------|----------|
-| 开发环境 | `DefaultSecurityConfig()` | 可选 |
-| 测试环境 | `DefaultSecurityConfig()` | 推荐 |
-| 生产环境 (HTTP) | `DefaultSecurityConfig()` | 推荐 |
-| 生产环境 (HTTPS) | `StrictSecurityConfig()` | 必需 |
+| 环境 | 推荐配置 |
+|------|---------|
+| 开发环境 | `DefaultSecurityConfig()` |
+| 测试环境 | `DefaultSecurityConfig()` |
+| 生产环境 (HTTP) | `DefaultSecurityConfig()` |
+| 生产环境 (HTTPS) | `StrictSecurityConfig()` |
 
 ## 🛠️ 开发指南
 
@@ -940,15 +652,13 @@ func MyMiddleware(config MyMiddlewareConfig) aurora.HandlerFunc {
 ### 中间件设计原则
 
 1. **最小依赖**: 优先依赖 Aurora 核心和 Go 标准库
-   - Auth 和 RateLimit 依赖 Aurora 核心组件（`core/auth`, `core/ratelimit`）
-   - 其他中间件保持零外部依赖
+   - 所有中间件保持零外部依赖
 2. **配置驱动**: 提供 `Config` 结构体和 `Default*Config()` 函数
 3. **文档完善**: 每个中间件提供独立的 Markdown 文档
 4. **性能优先**: 避免不必要的内存分配和计算
    - 对象池复用（如 Gzip Writer Pool）
-   - 并发控制（如 Auth Singleflight）
 5. **向后兼容**: 配置结构体只增不减，使用指针表示可选字段
-6. **故障处理**: 支持降级策略和优雅失败（如 RateLimit fail-open）
+6. **故障处理**: 支持降级策略和优雅失败
 
 ## 🧪 测试
 
@@ -959,8 +669,7 @@ func MyMiddleware(config MyMiddlewareConfig) aurora.HandlerFunc {
 go test -v ./middleware/...
 
 # 测试特定中间件
-go test -v ./middleware -run TestAuth
-go test -v ./middleware -run TestIPRateLimiter
+go test -v ./middleware -run TestIPFilter
 go test -v ./middleware -run TestCORS
 go test -v ./middleware -run TestGzip
 go test -v ./middleware -run TestSecurity

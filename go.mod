@@ -3,12 +3,10 @@ module github.com/surge-go/aurora
 go 1.27.0
 
 require (
-	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/goccy/go-yaml v1.19.2
-	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/rabbitmq/amqp091-go v1.14.0
@@ -29,7 +27,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.uber.org/zap v1.28.0
-	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/mysql v1.6.0
@@ -63,6 +60,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
@@ -98,7 +96,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.14.0 // indirect
-	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
@@ -109,6 +106,7 @@ require (
 	golang.org/x/arch v0.31.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
